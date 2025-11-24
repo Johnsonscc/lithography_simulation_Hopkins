@@ -3,7 +3,7 @@ import numpy as np
 from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.lithography_simulation import hopkins_digital_lithography_simulation, photoresist_model
-from core.inverse_lithography import inverse_lithography_optimization
+from core.inverse_lithography_base import inverse_lithography_optimization
 from utils.visualization import plot_comparison,plot_optimization_history
 
 

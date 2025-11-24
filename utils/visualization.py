@@ -1,12 +1,21 @@
 import matplotlib.pyplot as plt
-from config.parameters import *
 import numpy as np
+from config.parameters import *
+from matplotlib.colors import LinearSegmentedColormap
+
+
+def create_black_red_yellow_cmap():
+    """创建黑-红-黄的颜色映射"""
+    colors = ['black', 'darkred', 'red', 'orange', 'yellow']
+    return LinearSegmentedColormap.from_list('black_red_yellow', colors, N=256)
 
 
 def plot_comparison(target_image, aerial_image_initial, print_image_initial,
                     best_mask, best_simulated_image, optimized_binary_simulated_image,
                     pe_initial, pe_best, save_path=None):
-    """简化比较图 - 只显示关键结果"""
+     # 创建自定义颜色映射
+    intensity_cmap = create_black_red_yellow_cmap()
+
     plt.figure(figsize=(18, 12))
 
     # 目标图像
@@ -18,7 +27,7 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
 
     # 原始掩膜曝光后的图像
     plt.subplot(232)
-    plt.imshow(aerial_image_initial, cmap='gray')
+    plt.imshow(aerial_image_initial, cmap=intensity_cmap)
     plt.title('Aerial Image (Original)')
     plt.xlabel('X Coordinate')
     plt.ylabel('Y Coordinate')
@@ -41,7 +50,7 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
 
     # 优化掩膜曝光后的图像
     plt.subplot(235)
-    plt.imshow(best_simulated_image, cmap='gray')
+    plt.imshow(best_simulated_image, cmap=intensity_cmap)
     plt.title('Aerial Image (Optimized)')
     plt.xlabel('X Coordinate')
     plt.ylabel('Y Coordinate')
