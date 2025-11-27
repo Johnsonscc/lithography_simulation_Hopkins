@@ -8,11 +8,14 @@ from scipy.sparse.linalg import svds
 from tqdm import tqdm
 from scipy.sparse import lil_matrix, csr_matrix
 from matplotlib.colors import LinearSegmentedColormap
+from skimage import filters
+from skimage.feature import canny
+from scipy.ndimage import gaussian_filter
 
 # 光刻仿真参数
 LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）
-LX = LY = 1000  # 图像尺寸（单位：像素）
+LX = LY = 100 # 图像尺寸（单位：像素）
 DX = DY = 7560  # 像素尺寸（单位：纳米）
 N = 1  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
@@ -30,11 +33,11 @@ A = 10.0  # sigmoid函数梯度
 TR = 0.5  # 阈值参数
 
 # 文件路径
-INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
-TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/optimized_mask_cell1000_inverse.png"
-RESULTS_IMAGE_PATH = "data/output/results_comparison_cell1000_inverse.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/fitness_evolution_cell1000_inverse.png"
+INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
+TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/results_comparison_t100_inverse.png"
+OUTPUT_EDGE_PATH = "../lithography_simulation_Hopkins/data/output/edge_t100_inverse.png"
+OUTPUT_PEDGE_PATH = "../lithography_simulation_Hopkins/data/output/edgep_t100_inverse.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
@@ -171,31 +174,20 @@ def photoresist_model(intensity, a=A, Tr=TR):
     return resist_pattern
 
 
-import numpy as np
-from skimage.feature import canny
+def compute_mepe(target, printed_image):
 
+    # 1. 精确边缘检测
+    target_edges = filters.roberts(target) > 0.05
+    printed_edges  = canny(printed_image, sigma=2.0)
 
-def compute_mepe(printed_image, target):
-    # 1. 确保图像是二值的
-    if printed_image.max() > 1:
-        printed_binary = (printed_image > 0.5).astype(np.uint8)
-    else:
-        printed_binary = printed_image
+    save_image(target_edges, OUTPUT_EDGE_PATH)
+    save_image(printed_edges, OUTPUT_PEDGE_PATH)
 
-    if target.max() > 1:
-        target_binary = (target > 0.5).astype(np.uint8)
-    else:
-        target_binary = target
-
-    # 2. 精确边缘检测
-    target_edges = canny(target_binary, sigma=1.0)
-    printed_edges = canny(printed_binary, sigma=1.0)
-
-    # 3. 获取边缘点坐标
+    # 2. 获取边缘点坐标
     target_positions = np.argwhere(target_edges)
     printed_positions = np.argwhere(printed_edges)
 
-    # 4. 检查是否有边缘点
+    # 3. 检查是否有边缘点
     if len(target_positions) == 0:
         print("警告: 未检测到目标图像边缘")
         return 1.0
@@ -203,7 +195,7 @@ def compute_mepe(printed_image, target):
         print("警告: 未检测到打印图像边缘")
         return 1.0
 
-    # 5. 计算每个目标边缘点到最近打印边缘点的距离
+    # 4. 计算每个目标边缘点到最近打印边缘点的距离
     distances = []
     for target_pos in target_positions:
         # 计算到所有打印边缘点的距离
@@ -211,10 +203,48 @@ def compute_mepe(printed_image, target):
         min_dist = np.min(dists)
         distances.append(min_dist)
 
-    # 6. 计算平均边缘放置误差
+    # 5. 计算平均边缘放置误差
     mepe = np.mean(distances)
 
     return mepe
+
+def compute_target_weights(target_image, sigma=1.0):
+  
+    # 目标图像平滑（用于鲁棒的梯度计算）
+    smoothed_target = gaussian_filter(target_image, sigma=sigma)
+
+    # 计算梯度返回 (dZ_T/dy, dZ_T/dx)
+    grad_y, grad_x = np.gradient(smoothed_target)
+
+    # 计算梯度模 ||∇Z_T||
+    grad_magnitude = np.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    return grad_magnitude
+
+
+def mepe_loss(printed_image, target_image, sigma=1.0, epsilon=1e-10, gamma_scale = 10.0):
+ 
+    # 计算权重 w(x,y) = Smooth(||∇Z_T||)
+    weights = compute_target_weights(target_image, sigma=sigma)
+
+    # 计算误差平方项 (P - Z_T)^2
+    error_squared = (printed_image - target_image) ** 2
+
+    # 分子: 权重误差的总和 Sum[ (P - Z_T)^2 * w ]
+    numerator = np.sum(error_squared * weights)
+
+    # 分母: 权重总和 Sum[ w ]
+    denominator = np.sum(weights)
+
+    if denominator < epsilon:
+        # 如果没有边缘，损失为 0
+        return 0.0
+
+    loss = numerator / (denominator + epsilon)
+    # 引入缩放因子以匹配物理量纲
+    loss_scaled = loss * (gamma_scale)  # 乘以 10
+
+    return loss_scaled
 
 
 def create_black_red_yellow_cmap():
@@ -282,7 +312,7 @@ def main():
 
     # 计算MEPE
     print("Computing MEPE...")
-    MEPE_initial = compute_mepe(print_image_initial, target_image)
+    MEPE_initial = mepe_loss(print_image_initial,target_image)
 
     end_time = time.time()
     print(f'Running time: {end_time - start_time:.3f} seconds')
