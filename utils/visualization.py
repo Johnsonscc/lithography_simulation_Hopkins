@@ -12,7 +12,7 @@ def create_black_red_yellow_cmap():
 
 def plot_comparison(target_image, aerial_image_initial, print_image_initial,
                     best_mask, best_simulated_image, optimized_binary_simulated_image,
-                    pe_initial, pe_best, save_path=None):
+                    pe_initial, pe_best, mepe_initial, mepe_best,save_path=None):
      # 创建自定义颜色映射
     intensity_cmap = create_black_red_yellow_cmap()
 
@@ -40,8 +40,11 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
     plt.ylabel('Y Coordinate')
     plt.text(0.75, -0.12, f'PE = {pe_initial:.2f}', transform=plt.gca().transAxes,
              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+    plt.text(0, -0.12, f'MEPE = {mepe_initial:.2f}', transform=plt.gca().transAxes,
+              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
 
-    # 优化后的掩膜
+
+# 优化后的掩膜
     plt.subplot(234)
     plt.imshow(best_mask, cmap='gray')
     plt.title('Optimized Mask')
@@ -64,6 +67,8 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
 
     plt.text(0.75, -0.12, f'PE = {pe_best:.2f}',transform=plt.gca().transAxes,
              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+    plt.text(0, -0.12, f'MEPE = {mepe_best:.2f}', transform=plt.gca().transAxes,
+              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
 
     plt.tight_layout()
 

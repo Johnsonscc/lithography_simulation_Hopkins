@@ -17,7 +17,7 @@ LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）
 LX = LY = 100 # 图像尺寸（单位：像素）
 DX = DY = 7560  # 像素尺寸（单位：纳米）
-N = 1  # 折射率（无量纲）
+N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
 NA = 0.5  # 数值孔径（无量纲）
 K_SVD = 20  # 奇异值数目
@@ -29,8 +29,8 @@ TX = 8560  # 微镜周期（x方向）（单位：纳米）
 TY = 8560  # 微镜周期（y方向）（单位：纳米）
 
 # 光刻胶参数
-A = 10.0  # sigmoid函数梯度
-TR = 0.5  # 阈值参数
+A = 20.0  # sigmoid函数梯度
+TR = 0.3  # 阈值参数
 
 # 文件路径
 INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
@@ -208,38 +208,26 @@ def compute_mepe(target, printed_image):
 
     return mepe
 
-def compute_target_weights(target_image, sigma=1.0):
-  
+
+def mepe_loss(target_image, printed_image, sigma=1.0, epsilon=1e-10, gamma_scale = 10.0):
+
     # 目标图像平滑（用于鲁棒的梯度计算）
     smoothed_target = gaussian_filter(target_image, sigma=sigma)
 
     # 计算梯度返回 (dZ_T/dy, dZ_T/dx)
     grad_y, grad_x = np.gradient(smoothed_target)
+    weights = np.sqrt(grad_x ** 2 + grad_y ** 2)
 
-    # 计算梯度模 ||∇Z_T||
-    grad_magnitude = np.sqrt(grad_x ** 2 + grad_y ** 2)
-
-    return grad_magnitude
-
-
-def mepe_loss(printed_image, target_image, sigma=1.0, epsilon=1e-10, gamma_scale = 10.0):
- 
-    # 计算权重 w(x,y) = Smooth(||∇Z_T||)
-    weights = compute_target_weights(target_image, sigma=sigma)
-
-    # 计算误差平方项 (P - Z_T)^2
+    # 权重误差的总和 Sum[ (P - Z_T)^2 * w ] 权重总和 Sum[ w ]
     error_squared = (printed_image - target_image) ** 2
-
-    # 分子: 权重误差的总和 Sum[ (P - Z_T)^2 * w ]
     numerator = np.sum(error_squared * weights)
-
-    # 分母: 权重总和 Sum[ w ]
     denominator = np.sum(weights)
 
     if denominator < epsilon:
         # 如果没有边缘，损失为 0
         return 0.0
 
+    #计算平均边缘放置误差
     loss = numerator / (denominator + epsilon)
     # 引入缩放因子以匹配物理量纲
     loss_scaled = loss * (gamma_scale)  # 乘以 10
@@ -312,7 +300,7 @@ def main():
 
     # 计算MEPE
     print("Computing MEPE...")
-    MEPE_initial = mepe_loss(print_image_initial,target_image)
+    MEPE_initial = mepe_loss(target_image , print_image_initial)
 
     end_time = time.time()
     print(f'Running time: {end_time - start_time:.3f} seconds')
