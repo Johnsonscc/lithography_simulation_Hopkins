@@ -5,6 +5,7 @@ from scipy.sparse.linalg import svds
 import logging
 from tqdm import tqdm
 from scipy.sparse import lil_matrix, csr_matrix
+from scipy.ndimage import gaussian_filter
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class EPEInverseLithographyOptimizer:
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA, dx=DX, dy=DY,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
-                 optimizer_type=ILT_DEFAULT_OPTIMIZER):
+                 optimizer_type=OPTIMIZER_TYPE):
         # 光学参数
         self.lambda_ = lambda_
         self.na = na
@@ -217,86 +218,88 @@ class EPEInverseLithographyOptimizer:
 
         return new_mask
 
-    # --- 新增：边缘权重计算函数 ---
-    def _compute_edge_weights(self, target):
-        """计算目标图像的边缘权重 W = ||∇Z_T||"""
-        grad_y, grad_x = np.gradient(target)
-        weights = np.sqrt(grad_x ** 2 + grad_y ** 2)
-        sum_weight = np.sum(weights)
-        return weights, sum_weight
 
-    def _compute_analytical_gradient(self, mask, target):
+    def _compute_analytical_gradient(self, mask, target, epsilon=1e-10):
         """
-        修正版：移除了梯度计算中的归一化因子 C，使 SGD/Momentum 参数回归正常范围。
+        修正的EPE梯度计算
         """
-        epsilon = 1e-10
-
-        # 1. 计算边缘权重 W 和归一化常数 C
-        weights, sum_weight = self._compute_edge_weights(target)
-        C = sum_weight + epsilon
-
-        # --- 前向传播 ---
+        # 1. 前向传播
         M_fft = fftshift(fft2(mask))
         A_i_list = []
-        I_i_list = []
         intensity = np.zeros((self.lx, self.ly), dtype=np.float64)
+
         for i, (s_val, H_i) in enumerate(zip(self.singular_values, self.eigen_functions)):
             A_i_fft = M_fft * H_i
             A_i = ifft2(ifftshift(A_i_fft))
             I_i = np.abs(A_i) ** 2
-
             A_i_list.append(A_i)
-            I_i_list.append(I_i)
             intensity += s_val * I_i
 
         # 归一化光强
         intensity_min = np.min(intensity)
         intensity_max = np.max(intensity)
-        if intensity_max - intensity_min > 1e-10:
+        if intensity_max - intensity_min > epsilon:
             intensity_norm = (intensity - intensity_min) / (intensity_max - intensity_min)
         else:
-            intensity_norm = intensity / (intensity_max + 1e-10)
+            intensity_norm = intensity / (intensity_max + epsilon)
 
-        # 光刻胶输出
+        # 打印图像
         P = self.photoresist_model(intensity_norm)
 
-        # 计算 EPE 损失 (保持物理意义，除以 C)
-        pattern_error_sq = (target - P) ** 2
-        loss = np.sum(pattern_error_sq * weights) / C
+        # 2. 计算EPE损失和权重
+        # 使用目标图像的梯度权重（用于鲁棒的梯度计算）
+        smoothed_target = gaussian_filter(target, sigma=3.0)
+        grad_y, grad_x = np.gradient(smoothed_target)
+        W = np.sqrt(grad_x ** 2 + grad_y ** 2 + epsilon)
 
-        # --- 反向传播 ---
+        # 归一化权重到[0, 1]
+        if np.max(W) > 0:
+            W = W / np.max(W)
+
+        # EPE损失
+        pattern_error = (P - target) ** 2
+        epe_loss = np.sum(pattern_error * W)
+
+        # 3. 梯度计算
         gradient = np.zeros_like(mask, dtype=np.complex128)
 
-        # [修正点]: 计算梯度时不再除以 C (或者说乘以 C 恢复量级)
-        # 这样 SGD 的 learning_rate 就可以用 0.1 而不是 10.0 了
-        # dJ_dP_scaled = dJ_dP * C
-        # 原公式: dJ_dP = 2 * (P - target) * weights / C
-        # 新公式 (用于梯度流):
-        dJ_dP_scaled = 2 * (P - target) * weights
+        # ∂J/∂P = 2 * (P - target) * W
+        # 注意：这里保持正号，因为更新是 mask = mask - learning_rate * gradient
+        dJ_dP = 2 * (P - target) * W
 
+        # ∂P/∂I_norm = a * P * (1 - P)
         dP_dI_norm = self.a * P * (1 - P)
 
-        if intensity_max - intensity_min > 1e-10:
+        # ∂I_norm/∂I
+        if intensity_max - intensity_min > epsilon:
             dI_norm_dI = 1.0 / (intensity_max - intensity_min)
         else:
-            dI_norm_dI = 1.0 / (intensity_max + 1e-10)
+            dI_norm_dI = 1.0 / (intensity_max + epsilon)
 
+        # ∂P/∂I
         dP_dI = dP_dI_norm * dI_norm_dI
 
-        # 链式法则使用 scaled 的梯度
-        dJ_dI = dJ_dP_scaled * dP_dI
+        # ∂J/∂I = ∂J/∂P * ∂P/∂I
+        dJ_dI = dJ_dP * dP_dI
 
-        for i, (s_val, H_i, A_i, I_i) in enumerate(zip(
-                self.singular_values, self.eigen_functions, A_i_list, I_i_list
-        )):
-            dJ_dA_i = dJ_dI * 2 * s_val * A_i.conj()
+        # 4. 计算对掩模的梯度
+        for i, (s_val, H_i, A_i) in enumerate(zip(
+                self.singular_values, self.eigen_functions, A_i_list)):
+            # ∂I/∂A_i = 2 * σ_i * A_i^*
+            dI_dA_i = 2 * s_val * A_i.conj()
+
+            # ∂J/∂A_i = ∂J/∂I * ∂I/∂A_i
+            dJ_dA_i = dJ_dI * dI_dA_i
+
+            # 傅里叶变换计算梯度
             dJ_dA_i_fft = fftshift(fft2(dJ_dA_i))
             gradient_contribution = ifft2(ifftshift(dJ_dA_i_fft * np.conj(H_i)))
             gradient += gradient_contribution
 
+        # 取实部
         gradient_real = np.real(gradient)
 
-        return loss, gradient_real, intensity_norm, P
+        return epe_loss, gradient_real, intensity_norm, P
 
     def optimize(self, initial_mask, target, learning_rate=None, max_iterations=ILT_MAX_ITERATIONS, **optimizer_params):
         """
@@ -378,7 +381,7 @@ class EPEInverseLithographyOptimizer:
 def inverse_lithography_optimization(initial_mask, target_image,
                                          learning_rate=None,
                                          max_iterations=ILT_MAX_ITERATIONS,
-                                         optimizer_type='adam',
+                                         optimizer_type=OPTIMIZER_TYPE,
                                          **optimizer_params):
     """
     基于 EPE 损失的逆光刻优化主函数

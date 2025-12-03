@@ -16,7 +16,7 @@ class InverseLithographyOptimizer:
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA, dx=DX, dy=DY,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
-                 optimizer_type=ILT_DEFAULT_OPTIMIZER):
+                 optimizer_type=OPTIMIZER_TYPE):
         # 光学参数
         self.lambda_ = lambda_
         self.na = na
@@ -384,7 +384,7 @@ class InverseLithographyOptimizer:
 def inverse_lithography_optimization(initial_mask, target_image,
                                      learning_rate=None,
                                      max_iterations=ILT_MAX_ITERATIONS,
-                                     optimizer_type='sgd',
+                                     optimizer_type=OPTIMIZER_TYPE,
                                      **optimizer_params):
     """
     逆光刻优化主函数

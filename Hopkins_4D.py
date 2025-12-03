@@ -12,6 +12,7 @@ from skimage import filters
 from skimage.feature import canny
 from scipy.ndimage import gaussian_filter
 
+
 # 光刻仿真参数
 LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）
@@ -209,7 +210,7 @@ def compute_mepe(target, printed_image):
     return mepe
 
 
-def mepe_loss(target_image, printed_image, sigma=1.0, epsilon=1e-10, gamma_scale = 10.0):
+def epe_loss(target_image, printed_image, sigma=1.0, epsilon=1e-10, gamma_scale = 10.0):
 
     # 目标图像平滑（用于鲁棒的梯度计算）
     smoothed_target = gaussian_filter(target_image, sigma=sigma)
@@ -220,20 +221,9 @@ def mepe_loss(target_image, printed_image, sigma=1.0, epsilon=1e-10, gamma_scale
 
     # 权重误差的总和 Sum[ (P - Z_T)^2 * w ] 权重总和 Sum[ w ]
     error_squared = (printed_image - target_image) ** 2
-    numerator = np.sum(error_squared * weights)
-    denominator = np.sum(weights)
+    loss = np.sum(error_squared * weights)
 
-    if denominator < epsilon:
-        # 如果没有边缘，损失为 0
-        return 0.0
-
-    #计算平均边缘放置误差
-    loss = numerator / (denominator + epsilon)
-    # 引入缩放因子以匹配物理量纲
-    loss_scaled = loss * (gamma_scale)  # 乘以 10
-
-    return loss_scaled
-
+    return loss
 
 def create_black_red_yellow_cmap():
     """创建黑-红-黄的颜色映射"""
@@ -242,7 +232,7 @@ def create_black_red_yellow_cmap():
 
 
 def plot_comparison(target_image, aerial_image_initial, print_image_initial,
-                    pe_initial, mepe_initial, save_path=None):
+                    pe_initial, epe_initial, save_path=None):
     """使用黑红黄梯度表示光强分布的比较图"""
 
     # 创建自定义颜色映射
@@ -272,6 +262,8 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
     plt.ylabel('Y Coordinate')
     plt.text(0.75, -0.1, f'PE = {pe_initial:.2f}', transform=plt.gca().transAxes,
              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+    plt.text(0, -0.1, f'EPE = {epe_initial:.2f}', transform=plt.gca().transAxes,
+              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
 
     plt.tight_layout()
 
@@ -298,18 +290,18 @@ def main():
     # 计算传统PE
     PE_initial = np.sum((target_image - print_image_initial) ** 2)
 
-    # 计算MEPE
+    # 计算EPE
     print("Computing MEPE...")
-    MEPE_initial = mepe_loss(target_image , print_image_initial)
+    EPE_initial = epe_loss(target_image , print_image_initial)
 
     end_time = time.time()
     print(f'Running time: {end_time - start_time:.3f} seconds')
     print(f'Initial PE: {PE_initial}')
-    print(f'Initial MEPE: {MEPE_initial}')
+    print(f'Initial EPE: {EPE_initial}')
 
     # 可视化结果
     plot_comparison(target_image, aerial_image_initial, print_image_initial,
-                    PE_initial, MEPE_initial, RESULTS_IMAGE_PATH)
+                    PE_initial, EPE_initial, RESULTS_IMAGE_PATH)
 
 
 if __name__ == "__main__":

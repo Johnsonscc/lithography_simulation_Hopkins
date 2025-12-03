@@ -6,9 +6,42 @@ from core.lithography_simulation import hopkins_digital_lithography_simulation, 
 from core.inverse_lithography import inverse_lithography_optimization
 from utils.visualization import plot_comparison,plot_optimization_history
 from scipy.ndimage import gaussian_filter
+from skimage import filters
+from skimage.feature import canny
+
+def compute_mepe(target, printed_image):
+
+    # 1. 精确边缘检测
+    target_edges = filters.roberts(target) > 0.05
+    printed_edges  = canny(printed_image, sigma=2.0)
+
+    # 2. 获取边缘点坐标
+    target_positions = np.argwhere(target_edges)
+    printed_positions = np.argwhere(printed_edges)
+
+    # 3. 检查是否有边缘点
+    if len(target_positions) == 0:
+        print("警告: 未检测到目标图像边缘")
+        return 1.0
+    if len(printed_positions) == 0:
+        print("警告: 未检测到打印图像边缘")
+        return 1.0
+
+    # 4. 计算每个目标边缘点到最近打印边缘点的距离
+    distances = []
+    for target_pos in target_positions:
+        # 计算到所有打印边缘点的距离
+        dists = np.linalg.norm(printed_positions - target_pos, axis=1)
+        min_dist = np.min(dists)
+        distances.append(min_dist)
+
+    # 5. 计算平均边缘放置误差
+    mepe = np.mean(distances)
+
+    return mepe
 
 
-def mepe_loss(target_image, printed_image, sigma=1.0, epsilon=1e-10, gamma_scale = 10.0):
+def mepe_loss(target_image, printed_image, sigma=3.0, epsilon=1e-10, gamma_scale = 10.0):
 
     # 目标图像平滑（用于鲁棒的梯度计算）
     smoothed_target = gaussian_filter(target_image, sigma=sigma)
@@ -32,6 +65,7 @@ def mepe_loss(target_image, printed_image, sigma=1.0, epsilon=1e-10, gamma_scale
     loss_scaled = loss * (gamma_scale)  # 乘以 10
 
     return loss_scaled
+
 
 def main():
     # 开始计时
