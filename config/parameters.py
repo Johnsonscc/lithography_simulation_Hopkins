@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）774
 DX = DY = 7560  # 像素尺寸（单位：纳米）
-LX = LY = 1000  # 图像尺寸（单位：像素）
+LX = LY = 100  # 图像尺寸（单位：像素）
 N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
 NA = 0.5  # 数值孔径（无量纲）
@@ -50,7 +50,7 @@ ILT_OPTIMIZER_CONFIGS = {
         'params': {}
     },
     'adam': {
-        'learning_rate': 0.002,
+        'learning_rate': 0.01,
         'params': {
             'beta1': 0.9,
             'beta2': 0.999,
@@ -64,11 +64,11 @@ ILT_OPTIMIZER_CONFIGS = {
 OPTIMIZER_TYPE='adam'
 
 # 文件路径
-INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
-TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/mepe_ilt/optimized_mask_cell1000_inverse_adam.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/mepe_ilt/results_comparison_cell1000_inverse_adam.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/mepe_ilt/fitness_evolution_cell1000_inverse_adam.png"
+INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
+TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/optimized_mask_t100_inverse_adam.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/results_comparison_t100_inverse_adam.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/fitness_evolution_t100_inverse_adam.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei

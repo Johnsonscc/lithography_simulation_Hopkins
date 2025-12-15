@@ -63,7 +63,6 @@ class EPEInverseLithographyOptimizer:
         J = self.light_source_function(FX, FY)
         P = self.pupil_response_function(FX, FY)
         tcc_kernel = J * P
-        # print(f"Building 4D TCC matrix ({Lx}x{Ly}x{Lx}x{Ly})...")
         TCC_sparse = lil_matrix((Lx * Ly, Lx * Ly), dtype=np.complex128)
         neighborhood_radius = 10
 
@@ -81,7 +80,6 @@ class EPEInverseLithographyOptimizer:
         return TCC_csr
 
     def _svd_of_tcc_matrix(self, TCC_csr, k, Lx, Ly):
-        # print("Performing SVD decomposition...")
         k_actual = min(k, min(TCC_csr.shape) - 1)
         U, S, Vh = svds(TCC_csr, k=k_actual)
         significant_mask = S > (np.max(S) * 0.01)
@@ -221,7 +219,7 @@ class EPEInverseLithographyOptimizer:
 
     def _compute_analytical_gradient(self, mask, target, epsilon=1e-10):
         """
-        修正的EPE梯度计算
+        EPE梯度计算
         """
         # 1. 前向传播
         M_fft = fftshift(fft2(mask))
@@ -247,9 +245,8 @@ class EPEInverseLithographyOptimizer:
         P = self.photoresist_model(intensity_norm)
 
         # 2. 计算EPE损失和权重
-        # 使用目标图像的梯度权重（用于鲁棒的梯度计算）
-        smoothed_target = gaussian_filter(target, sigma=3.0)
-        grad_y, grad_x = np.gradient(smoothed_target)
+        # 使用打印图像的梯度权重（用于鲁棒的梯度计算）
+        grad_y, grad_x = np.gradient(P)
         W = np.sqrt(grad_x ** 2 + grad_y ** 2 + epsilon)
 
         # 归一化权重到[0, 1]
@@ -264,7 +261,6 @@ class EPEInverseLithographyOptimizer:
         gradient = np.zeros_like(mask, dtype=np.complex128)
 
         # ∂J/∂P = 2 * (P - target) * W
-        # 注意：这里保持正号，因为更新是 mask = mask - learning_rate * gradient
         dJ_dP = 2 * (P - target) * W
 
         # ∂P/∂I_norm = a * P * (1 - P)

@@ -43,7 +43,7 @@ class InverseLithographyOptimizer:
         logger.info(f"InverseLithographyOptimizer initialized with {optimizer_type} optimizer")
 
     def pupil_response_function(self, fx, fy):
-        """修正：添加self参数"""
+        """添加光瞳函数"""
         r = np.sqrt(fx ** 2 + fy ** 2)
         r_max = self.na / self.lambda_
         P = np.where(r < r_max, self.lambda_ ** 2 / (np.pi * (self.na) ** 2), 0)
@@ -58,7 +58,6 @@ class InverseLithographyOptimizer:
         return J
 
     def _compute_full_tcc_matrix(self, fx, fy, sparsity_threshold=0.001):
-        """修正：使用成员函数"""
         # 创建频域网格
         Lx, Ly = len(fx), len(fy)
         FX, FY = np.meshgrid(fx, fy, indexing='xy')
