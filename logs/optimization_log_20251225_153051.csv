@@ -1,0 +1,15 @@
+# ===========================================
+# Inverse Lithography Optimization Log
+# ===========================================
+# Timestamp: 2025-12-25 15:30:51
+# Optimizer Type: momentum
+# Loss Type: PE
+# Learning Rate: 0.01
+# Initial Loss: 5541.527552
+# Target Shape: 1000x1000_cell1000_inverse_stage1
+# Optimizer Parameters:
+#   momentum: 0.9
+# ===========================================
+
+iteration,loss,grad_norm,mask_min,mask_max,mask_mean,mask_std,velocity_norm,time_elapsed
+0,5541.527552177797,204.32784712210633,0.0,1.0,0.059254,0.23609947794097272,1.1209192276000977

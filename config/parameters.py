@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）774
 DX = DY = 7560  # 像素尺寸（单位：纳米）
-LX = LY = 100  # 图像尺寸（单位：像素）
+LX = LY = 1000  # 图像尺寸（单位：像素）
 N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
 NA = 0.5  # 数值孔径（无量纲）
@@ -54,21 +54,20 @@ ILT_OPTIMIZER_CONFIGS = {
         'params': {
             'beta1': 0.9,
             'beta2': 0.999,
-            'epsilon': 1e-8,
-            'lambda': 1 - 1e-8
+            'epsilon': 1e-2,
         }
     }
 }
 
 # 默认优化器配置
-OPTIMIZER_TYPE='adam'
+OPTIMIZER_TYPE='cg'
 
 # 文件路径
-INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
-TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/optimized_mask_t100_inverse_adam.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/results_comparison_t100_inverse_adam.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/fitness_evolution_t100_inverse_adam.png"
+INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
+TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/adam_sgd/optimized_mask_cell1000_inverse_adam_sgd.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/adam_sgd/results_comparison_cell1000_inverse_adam_sgd.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/adam_sgd/fitness_evolution_cell1000_inverse_adam_sgd.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
