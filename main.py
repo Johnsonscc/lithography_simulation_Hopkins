@@ -49,7 +49,7 @@ def main():
 
         # --- 核心参数: Comb Weight ---
         # 0.85 代表: 85% 的梯度方向由边缘(EPE)决定, 15% 由全局(PE)决定, 全局梯度能有效压制背景噪声
-        comb_weight=0.5,
+        comb_weight=0.1,
 
         log_csv=True,
         experiment_tag=f"{experiment_tag}_comb",

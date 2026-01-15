@@ -16,7 +16,7 @@ from scipy.ndimage import gaussian_filter
 # 光刻仿真参数
 LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）
-LX = LY = 100 # 图像尺寸（单位：像素）
+LX = LY = 1000 # 图像尺寸（单位：像素）
 DX = DY = 7560  # 像素尺寸（单位：纳米）
 N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
@@ -34,11 +34,11 @@ A = 20.0  # sigmoid函数梯度
 TR = 0.3  # 阈值参数
 
 # 文件路径
-INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
-TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/results_comparison_t100_inverse.png"
-OUTPUT_EDGE_PATH = "../lithography_simulation_Hopkins/data/output/edge_t100_inverse.png"
-OUTPUT_PEDGE_PATH = "../lithography_simulation_Hopkins/data/output/edgep_t100_inverse.png"
+INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
+TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/results_comparison_cell1000_inverse.png"
+OUTPUT_EDGE_PATH = "../lithography_simulation_Hopkins/data/output/edge_cell1000_inverse.png"
+OUTPUT_PEDGE_PATH = "../lithography_simulation_Hopkins/data/output/edgep_cell1000_inverse.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
