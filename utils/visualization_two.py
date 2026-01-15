@@ -1,6 +1,8 @@
+import matplotlib.pyplot as plt
 import numpy as np
 from config.parameters import *
 from matplotlib.colors import LinearSegmentedColormap
+
 
 def create_black_red_yellow_cmap():
     """创建黑-红-黄的颜色映射"""
@@ -81,52 +83,82 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
     plt.show()
 
 
-def plot_dual_axis_loss_history(history, save_path=None):
+
+def plot_dual_axis_loss_history(pe_history, epe_history, save_path=None):
     """
-    自适应双轴损失曲线绘制
+    在同一个折线图中用两个Y轴同时显示PE-loss和EPE-loss
+
+    参数:
+        pe_history: PE优化阶段的历史记录，包含'pe_loss'和'epe_loss'
+        epe_history: EPE优化阶段的历史记录，包含'pe_loss'和'epe_loss'
+        save_path: 保存路径
     """
-    # 提取数据，如果你的 history 里记录了 pe_loss 和 epe_loss
-    # 如果只有单一 loss，可以将 history['loss'] 分配给主轴
-    pe_data = history.get('pe_loss', history.get('loss', []))
-    epe_data = history.get('epe_loss', [])
+    # 提取两个阶段的损失数据
+    pe_loss_stage1 = pe_history.get('pe_loss', [])
+    epe_loss_stage1 = pe_history.get('epe_loss', [])
 
-    iterations = np.arange(len(pe_data))
+    pe_loss_stage2 = epe_history.get('pe_loss', [])
+    epe_loss_stage2 = epe_history.get('epe_loss', [])
 
-    # 开启美化风格
-    plt.style.use('seaborn-v0_8-muted')  # 或者使用 plt.rcParams 自定义
-    fig, ax1 = plt.subplots(figsize=(10, 6), dpi=100)
+    # 组合全阶段数据
+    total_pe_loss = pe_loss_stage1 + pe_loss_stage2
+    total_epe_loss = epe_loss_stage1 + epe_loss_stage2
 
-    # 主轴：PE Loss
-    color_pe = '#1f77b4'  # 深蓝色
-    ax1.set_xlabel('Iterations', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('PE Loss (Pixel Error)', color=color_pe, fontsize=12, fontweight='bold')
-    line1, = ax1.plot(iterations, pe_data, color=color_pe, linewidth=2, label='PE Loss', alpha=0.8)
-    ax1.tick_params(axis='y', labelcolor=color_pe)
-    ax1.grid(True, linestyle='--', alpha=0.6)
+    # 创建迭代次数索引
+    iterations = np.arange(1, len(total_pe_loss) + 1)
 
-    # 次轴：EPE Loss (如果有数据的话)
-    if len(epe_data) > 0:
-        ax2 = ax1.twinx()
-        color_epe = '#d62728'  # 红色
-        ax2.set_ylabel('EPE Loss (Edge Placement)', color=color_epe, fontsize=12, fontweight='bold')
-        line2, = ax2.plot(iterations, epe_data, color=color_epe, linewidth=2, label='EPE Loss', alpha=0.8)
-        ax2.tick_params(axis='y', labelcolor=color_epe)
+    # 创建图形和第一个Y轴
+    fig, ax1 = plt.subplots(figsize=(12, 8))
 
-        # 合并图例
-        lines = [line1, line2]
-        labels = [l.get_label() for l in lines]
-        ax1.legend(lines, labels, loc='upper right', frameon=True, shadow=True)
-    else:
-        ax1.legend(loc='upper right')
+    # 绘制PE损失曲线（左轴）
+    color1 = 'blue'
+    ax1.set_xlabel('Iteration', fontsize=12)
+    ax1.set_ylabel('PE Loss', color=color1, fontsize=12)
+    ax1.plot(iterations, total_pe_loss, color=color1, linewidth=2.5, label='PE Loss')
+    ax1.tick_params(axis='y', labelcolor=color1)
+    ax1.grid(True, alpha=0.3, linestyle='--')
 
-    plt.title('Optimization History (200 Iterations)', fontsize=14, pad=15)
+    # 创建第二个Y轴
+    ax2 = ax1.twinx()
 
-    # 填充曲线下方，增加美感
-    ax1.fill_between(iterations, pe_data, color=color_pe, alpha=0.1)
+    # 绘制EPE损失曲线（右轴）
+    color2 = 'red'
+    ax2.set_ylabel('EPE Loss', color=color2, fontsize=12)
+    ax2.plot(iterations, total_epe_loss, color=color2, linewidth=2.5, label='EPE Loss')
+    ax2.tick_params(axis='y', labelcolor=color2)
 
-    fig.tight_layout()
+    # 标记阶段转换位置
+    if len(pe_loss_stage1) > 0:
+        # 添加垂直线标记阶段转换
+        switch_point = len(pe_loss_stage1)
+        ax1.axvline(x=switch_point, color='gray', linestyle='--', alpha=0.7, linewidth=1)
 
+        # 添加文本标注
+        y_pos = ax1.get_ylim()[1] * 0.95  # 在PE轴顶部附近
+        ax1.text(switch_point, y_pos, '  Stage Switch (PE→EPE)',
+                 color='gray', alpha=0.8, fontsize=10, verticalalignment='top')
+
+    # 添加图例（合并两个轴的图例）
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+
+    # 设置标题
+    plt.title('Two-Stage ILT Optimization: PE and EPE Loss History',
+              fontsize=14, fontweight='bold', pad=20)
+
+    # 调整布局
+    plt.tight_layout()
+
+    # 保存图像
     if save_path:
-        plt.savefig(save_path)
-        print(f"Loss curve saved to: {save_path}")
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
     plt.show()
+    plt.close()
+
+
+def plot_two_stage_history(pe_history, epe_history, save_path=None):
+    """双Y轴绘制优化历史"""
+    # 这里保持原有功能，调用新的双轴函数
+    plot_dual_axis_loss_history(pe_history, epe_history, save_path)

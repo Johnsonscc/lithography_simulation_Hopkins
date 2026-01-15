@@ -5,9 +5,10 @@ from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.lithography_simulation import hopkins_digital_lithography_simulation, photoresist_model
 from core.evaluation_function import pe_loss, mepe_loss
-from utils.visualization_two import plot_comparison, plot_dual_axis_loss_history
-from core.inverse_lithography_base import inverse_lithography_optimization_base as optimize_pe_stage1
-from core.inverse_lithography_epe import inverse_lithography_optimization_epe as optimize_epe_stage2
+from utils.visualization import plot_comparison,plot_dual_axis_loss_history
+
+# 导入新的 Comb 优化器
+from core.inverse_lithography_comb import inverse_lithography_optimization_comb
 
 
 def main():
@@ -28,44 +29,30 @@ def main():
     pe_init = pe_loss(target_image, resist_init)
     mepe_init = mepe_loss(target_image, resist_init)
 
-    # Stage 1: PE Optimization (全局拓扑搜索)
-    # 策略：使用自适应热启动，当损失不再显著下降时自动切换到下一阶段
-    print("\n" + "=" * 50)
-    print(">>> Stage 1: PE Optimization (Adaptive Warm Start)")
-    print("=" * 50)
 
-    pe_mask_result, pe_history = optimize_pe_stage1(
+    # Single Stage: Combined Optimization (Comb)
+    print("\n" + "=" * 60)
+    print(">>> Starting Single Stage: Combined (PE+EPE) Optimization")
+    print("=" * 60)
+
+    # 建议配置：
+    # 如果是黑底白字，建议使用 Momentum，comb_weight=0.85 左右
+    # 如果是普通图形，Adam 或 Momentum 均可
+
+    final_mask, history = inverse_lithography_optimization_comb(
         initial_mask=initial_mask,
         target_image=target_image,
-        optimizer_type='momentum',
-        learning_rate=0.01,  # 较大的学习率快速成型
-        max_iterations=200,  # 设置较高上限，依靠 patience 提前停止
 
-        enable_adaptive_switch=True,
-        patience=20,  # 连续 20 次迭代无明显进展则切换
+        optimizer_type='momentum',  # 推荐：Momentum 比较稳健
+        learning_rate=0.01,  # 单阶段通常可以用适中的学习率
+        max_iterations=300,  # 一次性跑完
+
+        # --- 核心参数: Comb Weight ---
+        # 0.85 代表: 85% 的梯度方向由边缘(EPE)决定, 15% 由全局(PE)决定, 全局梯度能有效压制背景噪声
+        comb_weight=0.5,
 
         log_csv=True,
-        experiment_tag=f"{experiment_tag}_stage1",
-        log_dir="logs"
-    )
-
-    print(f"Stage 1 Best PE: {min(pe_history['pe_loss']):.4f}")
-
-    # Stage 2: EPE Optimization (边缘精修)
-    # 策略：接力 Stage 1 的结果，使用小学习率微调边缘
-
-    print("\n" + "=" * 50)
-    print(">>> Stage 2: EPE Optimization (Fine-tuning)")
-    print("=" * 50)
-
-    final_mask, epe_history = optimize_epe_stage2(
-        initial_mask=pe_mask_result,  # 热启动：传入 Stage 1 的结果
-        target_image=target_image,
-        optimizer_type='cg',
-        learning_rate=0.005,  # 降低学习率，防止在极值点附近震荡
-        max_iterations=300,
-        log_csv=True,
-        experiment_tag=f"{experiment_tag}_stage2",
+        experiment_tag=f"{experiment_tag}_comb",
         log_dir="logs"
     )
 
@@ -89,17 +76,18 @@ def main():
     save_image(final_mask, OUTPUT_MASK_PATH)
 
     # 6. 可视化
+    # 绘制 EPE 和 PE 的变化曲线
+
+    print(f"Saving comparison plot to {RESULTS_IMAGE_PATH}...")
     plot_comparison(
         target_image, aerial_init, resist_init,
         final_mask, aerial_best, resist_best,
         pe_init, pe_final, mepe_init, mepe_final,
         save_path=RESULTS_IMAGE_PATH
     )
-    plot_dual_axis_loss_history(
-        pe_history,
-        epe_history,
-        save_path=FITNESS_PLOT_PATH.replace('.png', '_dual_axis_loss.png')
-    )
+
+    print(f"Saving loss history plot to {FITNESS_PLOT_PATH}...")
+    plot_dual_axis_loss_history(history, save_path=FITNESS_PLOT_PATH)
 
 
 if __name__ == "__main__":

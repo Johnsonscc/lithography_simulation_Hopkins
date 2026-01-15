@@ -65,9 +65,13 @@ OPTIMIZER_TYPE='cg'
 # 文件路径
 INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
 TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/adam_sgd/optimized_mask_cell1000_inverse_adam_sgd.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/adam_sgd/results_comparison_cell1000_inverse_adam_sgd.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/adam_sgd/fitness_evolution_cell1000_inverse_adam_sgd.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/two_stage/mo_cg/optimized_mask_cell1000_inverse_mo_cg.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/two_stage/mo_cg/results_comparison_cell1000_inverse_mo_cg.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/two_stage/mo_cg/fitness_evolution_cell1000_inverse_mo_cg.png"
+
+#OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/comb/adam/optimized_mask_cell1000_inverse_comb_adam_50.png"
+#RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/comb/adam/results_comparison_cell1000_inverse_comb_adam_50.png"
+#FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/comb/adam/fitness_evolution_cell1000_inverse_comb_adam_50.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
