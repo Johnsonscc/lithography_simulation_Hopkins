@@ -5,9 +5,7 @@ from utils.image_processing import load_image, save_image
 from core.lithography_simulation import hopkins_digital_lithography_simulation, photoresist_model
 from core.evaluation_function import pe_loss, mepe_loss
 from utils.visualization import plot_comparison,plot_dual_axis_loss_history
-
-# 导入新的 Comb 优化器
-from core.inverse_lithography_comb import inverse_lithography_optimization_comb
+from core.inverse_lithography_base import inverse_lithography_optimization_base
 
 
 def main():
@@ -28,17 +26,7 @@ def main():
     pe_init = pe_loss(target_image, resist_init)
     mepe_init = mepe_loss(target_image, resist_init)
 
-
-    # Single Stage: Combined Optimization (Comb)
-    print("\n" + "=" * 60)
-    print(">>> Starting Single Stage: Combined (PE+EPE) Optimization")
-    print("=" * 60)
-
-    # 建议配置：
-    # 如果是黑底白字，建议使用 Momentum，comb_weight=0.85 左右
-    # 如果是普通图形，Adam 或 Momentum 均可
-
-    final_mask, history = inverse_lithography_optimization_comb(
+    final_mask, history = inverse_lithography_optimization_base(
         initial_mask=initial_mask,
         target_image=target_image,
 
@@ -46,12 +34,8 @@ def main():
         learning_rate=0.01,  # 单阶段通常可以用适中的学习率
         max_iterations=300,  # 一次性跑完
 
-        # --- 核心参数: Comb Weight ---
-        # 0.85 代表: 85% 的梯度方向由边缘(EPE)决定, 15% 由全局(PE)决定, 全局梯度能有效压制背景噪声
-        comb_weight=0,
-
         log_csv=True,
-        experiment_tag=f"{experiment_tag}_comb",
+        experiment_tag=f"{experiment_tag}_base",
         log_dir="logs"
     )
 

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）774
 DX = DY = 7560  # 像素尺寸（单位：纳米）
-LX = LY = 1000  # 图像尺寸（单位：像素）
+LX = LY = 100  # 图像尺寸（单位：像素）
 N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
 NA = 0.5  # 数值孔径（无量纲）
@@ -63,11 +63,12 @@ ILT_OPTIMIZER_CONFIGS = {
 OPTIMIZER_TYPE='cg'
 
 # 文件路径
-INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
-TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell1000_inverse.png"
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/comb/adam/optimized_mask_cell1000_inverse_comb_adam_10.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/comb/adam/results_comparison_cell1000_inverse_comb_adam_10.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/comb/adam/fitness_evolution_cell1000_inverse_comb_adam_10.png"
+INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell160.png"
+TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell160.png"
+
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/optimized_mask_cell160_comb_adam0.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/results_comparison_cell160_comb_adam0.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/fitness_evolution_cell160_comb_adam0.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei

@@ -18,15 +18,13 @@ class CombInverseLithographyOptimizer:
     通过 comb_weight 参数控制两者的权重平衡。
     """
 
-    def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA, dx=DX, dy=DY,
+    def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
                  optimizer_type=OPTIMIZER_TYPE):
         # 光学参数
         self.lambda_ = lambda_
         self.na = na
         self.sigma = sigma
-        self.dx = dx
-        self.dy = dy
         self.lx = lx
         self.ly = ly
         self.k_svd = k_svd

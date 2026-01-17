@@ -37,9 +37,9 @@ def main():
     pe_mask_result, pe_history = optimize_pe_stage1(
         initial_mask=initial_mask,
         target_image=target_image,
-        optimizer_type='momentum',
+        optimizer_type='sgd',
         learning_rate=0.01,  # 较大的学习率快速成型
-        max_iterations=200,  # 设置较高上限，依靠 patience 提前停止
+        max_iterations=300,  # 设置较高上限，依靠 patience 提前停止
 
         enable_adaptive_switch=True,
         patience=20,  # 连续 20 次迭代无明显进展则切换
@@ -63,7 +63,7 @@ def main():
         target_image=target_image,
         optimizer_type='cg',
         learning_rate=0.005,  # 降低学习率，防止在极值点附近震荡
-        max_iterations=300,
+        max_iterations=1,
         log_csv=True,
         experiment_tag=f"{experiment_tag}_stage2",
         log_dir="logs"
