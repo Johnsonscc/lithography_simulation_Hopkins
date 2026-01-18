@@ -1,15 +1,19 @@
 # 参数配置
 import matplotlib.pyplot as plt
 # 光刻仿真参数
-LAMBDA = 405  # 波长（单位：纳米）
+LAMBDA = 193  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）774
 DX = DY = 7560  # 像素尺寸（单位：纳米）
 LX = LY = 100  # 图像尺寸（单位：像素）
 N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
-NA = 0.5  # 数值孔径（无量纲）
+NA = 0.95  # 数值孔径（无量纲）
 K_SVD = 20 #奇异值数目（无量纲）
 
+'''
+NA = 0.5  # 数值孔径（无量纲）
+LAMBDA = 405  # 波长（单位：纳米）
+'''
 # 光刻胶参数
 A = 20.0            # sigmoid函数梯度
 TR = 0.3            # 阈值参数
@@ -66,9 +70,9 @@ OPTIMIZER_TYPE='cg'
 INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/cell160.png"
 TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/cell160.png"
 
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/optimized_mask_cell160_comb_adam0.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/results_comparison_cell160_comb_adam0.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/fitness_evolution_cell160_comb_adam0.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/optimized_mask_cell160.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/results_comparison_cell160.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/comb/test/fitness_evolution_cell160.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
