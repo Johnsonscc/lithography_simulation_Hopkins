@@ -1,0 +1,13 @@
+# ===========================================
+# Inverse Lithography Optimization Log
+# ===========================================
+# Timestamp: 2026-01-18 22:05:15
+# Optimizer Type: cg
+# Loss Type: EPE
+# Learning Rate: 0.005
+# Initial Loss: 21.542266
+# Target Shape: 100x100_cell160_stage2
+# ===========================================
+
+iteration,loss,grad_norm,mask_min,mask_max,mask_mean,mask_std,direction_norm,beta,time_elapsed
+0,21.54226643112677,8.661409025342998,0.0,1.0,0.08446038069253438,0.21734622797327033,0,0.006173849105834961
