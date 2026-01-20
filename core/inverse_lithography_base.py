@@ -73,6 +73,8 @@ class InverseLithographyOptimizer:
 
     def _svd_of_tcc_matrix(self, TCC_csr, k, Lx=LX, Ly=LY):
         k_actual = min(k, min(TCC_csr.shape) - 1)
+        print(f"TCC SVD precomputation completed with {k_actual} singular values")
+
         U, S, Vh = svds(TCC_csr, k=k_actual)
         significant_mask = S > (np.max(S) * 0.01)
         S, U = S[significant_mask], U[:, significant_mask]
@@ -111,6 +113,31 @@ class InverseLithographyOptimizer:
             v = params.get('momentum', 0.9) * v - learning_rate * gradient
             self.optimizer_state['velocity'] = v
             new_mask = mask + v
+        elif self.optimizer_type == 'rmsprop':
+            decay_rate = params.get('decay_rate', 0.99)
+            epsilon = params.get('epsilon', 1e-8)
+            square_avg = self.optimizer_state['square_avg']
+            square_avg = decay_rate * square_avg + (1 - decay_rate) * (gradient ** 2)
+            self.optimizer_state['square_avg'] = square_avg
+            new_mask = mask - learning_rate * gradient / (np.sqrt(square_avg) + epsilon)
+        elif self.optimizer_type == 'cg':
+            grad_curr = gradient
+            t = self.optimizer_state['t']
+            if t == 0:
+                direction = -grad_curr
+            else:
+                grad_prev = self.optimizer_state['prev_grad']
+                direction_prev = self.optimizer_state['direction']
+                y_k = grad_curr - grad_prev
+                numerator = np.sum(grad_curr * y_k)
+                denominator = np.sum(grad_prev ** 2)
+                beta = numerator / (denominator + 1e-10)
+                beta = max(0, beta)
+                direction = -grad_curr + beta * direction_prev
+            self.optimizer_state['prev_grad'] = grad_curr
+            self.optimizer_state['direction'] = direction
+            self.optimizer_state['t'] = t + 1
+            new_mask = mask + learning_rate * direction
         elif self.optimizer_type == 'adam':
             t = self.optimizer_state['t'] + 1
             m, v = self.optimizer_state['m'], self.optimizer_state['v']
@@ -120,7 +147,7 @@ class InverseLithographyOptimizer:
             v_hat = v / (1 - 0.999 ** t)
             new_mask = mask - learning_rate * m_hat / (np.sqrt(v_hat) + 1e-8)
             self.optimizer_state.update({'m': m, 'v': v, 't': t})
-        # ... 其他优化器逻辑同理 ...
+
         return np.clip(new_mask, 0, 1)
 
     def _compute_analytical_gradient(self, mask, target):

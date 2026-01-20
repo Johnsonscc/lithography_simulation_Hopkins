@@ -42,7 +42,7 @@ def main():
         initial_mask=initial_mask,
         target_image=target_image,
 
-        optimizer_type='momentum',  # 推荐：Momentum 比较稳健
+        optimizer_type='sgd',  # 推荐：Momentum 比较稳健
         learning_rate=0.01,  # 单阶段通常可以用适中的学习率
         max_iterations=300,  # 一次性跑完
 
