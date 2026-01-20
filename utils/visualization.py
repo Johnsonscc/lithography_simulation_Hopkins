@@ -44,7 +44,7 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
     plt.ylabel('Y Coordinate')
     plt.text(0.75, -0.12, f'PE = {pe_initial:.2f}', transform=plt.gca().transAxes,
              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
-    plt.text(0, -0.12, f'MEPE = {mepe_initial:.2f}', transform=plt.gca().transAxes,
+    plt.text(0, -0.12, f'EPE = {mepe_initial:.2f}', transform=plt.gca().transAxes,
               bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
 
     # 优化后的掩膜
@@ -70,7 +70,7 @@ def plot_comparison(target_image, aerial_image_initial, print_image_initial,
 
     plt.text(0.75, -0.12, f'PE = {pe_best:.2f}',transform=plt.gca().transAxes,
              bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
-    plt.text(0, -0.12, f'MEPE = {mepe_best:.2f}', transform=plt.gca().transAxes,
+    plt.text(0, -0.12, f'EPE = {mepe_best:.2f}', transform=plt.gca().transAxes,
               bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
 
     plt.tight_layout()

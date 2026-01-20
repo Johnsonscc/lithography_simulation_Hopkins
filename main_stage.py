@@ -4,7 +4,7 @@ import numpy as np
 from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.lithography_simulation import hopkins_digital_lithography_simulation, photoresist_model
-from core.evaluation_function import pe_loss, mepe_loss
+from core.evaluation_function import pe_loss, epe_loss
 from utils.visualization_two import plot_comparison, plot_dual_axis_loss_history
 from core.inverse_lithography_base import inverse_lithography_optimization_base as optimize_pe_stage1
 from core.inverse_lithography_epe import inverse_lithography_optimization_epe as optimize_epe_stage2
@@ -26,7 +26,7 @@ def main():
     aerial_init = hopkins_digital_lithography_simulation(initial_mask)
     resist_init = photoresist_model(aerial_init)
     pe_init = pe_loss(target_image, resist_init)
-    mepe_init = mepe_loss(target_image, resist_init)
+    epe_init = epe_loss(target_image, resist_init)
 
     # Stage 1: PE Optimization (全局拓扑搜索)
     # 策略：使用自适应热启动，当损失不再显著下降时自动切换到下一阶段
@@ -74,7 +74,7 @@ def main():
     aerial_best = hopkins_digital_lithography_simulation(final_mask)
     resist_best = photoresist_model(aerial_best)
     pe_final = pe_loss(target_image, resist_best)
-    mepe_final = mepe_loss(target_image, resist_best)
+    epe_final = epe_loss(target_image, resist_best)
 
     end_time = time.time()
 
@@ -82,7 +82,7 @@ def main():
     print("-" * 50)
     print(f"Total Process Time: {end_time - start_time:.2f}s")
     print(f"PE Improvement:     {pe_init:.2f} -> {pe_final:.2f}")
-    print(f"MEPE Improvement:   {mepe_init:.4f} -> {mepe_final:.4f}")
+    print(f"EPE Improvement:   {epe_init:.4f} -> {epe_final:.4f}")
     print("-" * 50)
 
     # 5. 保存结果
@@ -92,7 +92,7 @@ def main():
     plot_comparison(
         target_image, aerial_init, resist_init,
         final_mask, aerial_best, resist_best,
-        pe_init, pe_final, mepe_init, mepe_final,
+        pe_init, pe_final, epe_init, epe_final,
         save_path=RESULTS_IMAGE_PATH
     )
     plot_dual_axis_loss_history(

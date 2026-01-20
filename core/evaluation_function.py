@@ -4,6 +4,18 @@ def pe_loss(target_image, printed_image):
     loss = np.sum((target_image - printed_image)**2)
     return loss
 
+
+def epe_loss(target_image, printed_image, epsilon=1e-10, gamma_scale = 10.0):
+
+    # 计算梯度返回 (dZ_T/dy, dZ_T/dx)
+    grad_y, grad_x = np.gradient(printed_image)
+    weights = np.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    # 权重误差的总和 Sum[ (P - Z_T)^2 * w ] 权重总和 Sum[ w ]
+    error_squared = (printed_image - target_image) ** 2
+    numerator = np.sum(error_squared * weights)
+    return numerator
+
 def mepe_loss(target_image, printed_image, epsilon=1e-10, gamma_scale = 10.0):
 
     # 计算梯度返回 (dZ_T/dy, dZ_T/dx)
