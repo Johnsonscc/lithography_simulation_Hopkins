@@ -2,9 +2,11 @@ import time
 import logging
 import numpy as np
 import torch
+import cv2
 from config.parameters import *
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from scipy.sparse.linalg import svds
+from scipy.ndimage import binary_dilation, binary_erosion
 from tqdm import tqdm
 from scipy.sparse import lil_matrix, csr_matrix
 from utils.optimization_logger import OptimizationLogger
@@ -12,15 +14,16 @@ from utils.optimization_logger import OptimizationLogger
 logger = logging.getLogger(__name__)
 
 
-class ConFIGInverseLithographyOptimizer:
+class EdgeConstrainedConFIGOptimizer:
     """
-    ConFIG (Conflict-Free Gradient) 优化的逆光刻优化器
-    提供基础ConFIG版本和动量ConFIG版本
+    边缘约束的ConFIG逆光刻优化器
+    只优化图案边缘附近指定范围内的像素，保持背景稳定
     """
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
-                 use_momentum=False, beta_1=0.9, beta_2=0.999):
+                 use_momentum=False, beta_1=0.9, beta_2=0.999,
+                 edge_pixel_range=10):
         # 光学参数
         self.lambda_ = lambda_
         self.na = na
@@ -37,10 +40,7 @@ class ConFIGInverseLithographyOptimizer:
         self.use_momentum = use_momentum
         self.beta_1 = beta_1
         self.beta_2 = beta_2
-
-        # ConFIG 操作器
-        self.config_operator = None
-        self.momentum_operator = None
+        self.edge_pixel_range = edge_pixel_range  # 边缘像素范围
 
         # 动量状态
         if use_momentum:
@@ -51,7 +51,11 @@ class ConFIGInverseLithographyOptimizer:
         self.eigen_functions = None
         self._precompute_tcc_svd()
 
-        logger.info(f"ConFIGInverseLithographyOptimizer initialized (momentum={use_momentum})")
+        # 边缘区域掩膜
+        self.update_region_mask = None
+
+        logger.info(
+            f"EdgeConstrainedConFIGOptimizer initialized (edge_range={edge_pixel_range}, momentum={use_momentum})")
 
     def _init_momentum_state(self):
         """初始化动量状态"""
@@ -61,6 +65,86 @@ class ConFIGInverseLithographyOptimizer:
             't': 0,  # 时间步
             't_grads': [0, 0]  # 每个梯度的更新次数（EPE和PE）
         }
+
+    def _detect_edge_region(self, target, edge_pixel_range=10):
+        """
+        检测目标图像的边缘区域，生成更新区域掩膜
+
+        参数:
+            target: 二值目标图像 (0或1)
+            edge_pixel_range: 边缘两侧的像素范围
+
+        返回:
+            update_mask: 更新区域掩膜 (1表示需要更新，0表示保持原样)
+        """
+        # 确保目标是二值图像
+        binary_target = (target > 0.5).astype(np.uint8)
+
+        # 方法1: 使用Sobel算子检测边缘
+        sobelx = cv2.Sobel(binary_target, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(binary_target, cv2.CV_64F, 0, 1, ksize=3)
+        edge_magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
+
+        # 方法2: 使用Canny边缘检测
+        # edges = cv2.Canny((binary_target * 255).astype(np.uint8), 50, 150)
+        # edge_magnitude = edges.astype(np.float64) / 255.0
+
+        # 方法3: 使用形态学梯度检测边缘 (膨胀-腐蚀)
+        kernel = np.ones((3, 3), np.uint8)
+        dilated = cv2.dilate(binary_target, kernel, iterations=1)
+        eroded = cv2.erode(binary_target, kernel, iterations=1)
+        morphological_edge = dilated - eroded
+
+        # 组合边缘检测结果
+        combined_edge = edge_magnitude + morphological_edge
+        edge_binary = (combined_edge > 0).astype(np.uint8)
+
+        # 对边缘区域进行膨胀，扩大更新区域
+        if edge_pixel_range > 0:
+            # 创建圆形结构元素
+            kernel_size = 2 * edge_pixel_range + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            update_mask = cv2.dilate(edge_binary, kernel, iterations=1)
+        else:
+            update_mask = edge_binary
+
+        # 也考虑图案内部区域（可能需要微调）
+        # 对原始图案进行腐蚀，保留图案内部区域
+        pattern_inner = cv2.erode(binary_target, kernel, iterations=edge_pixel_range // 2)
+        update_mask = np.logical_or(update_mask, pattern_inner).astype(np.float64)
+
+        # 确保边缘平滑
+        update_mask = cv2.GaussianBlur(update_mask.astype(np.float32), (5, 5), 1.0)
+
+        logger.info(
+            f"Edge region detection completed. Update region: {np.sum(update_mask > 0.1) / update_mask.size * 100:.1f}% of total area")
+
+        return update_mask
+
+    def _apply_update_mask(self, gradient, update_mask):
+        """
+        将梯度限制在更新区域内
+
+        参数:
+            gradient: 原始梯度
+            update_mask: 更新区域掩膜
+
+        返回:
+            masked_gradient: 掩膜后的梯度
+        """
+        # 对更新掩膜进行平滑处理，避免硬边界
+        smooth_mask = cv2.GaussianBlur(update_mask, (3, 3), 0.5)
+
+        # 应用掩膜
+        masked_gradient = gradient * smooth_mask
+
+        # 可选：在掩膜边界处添加渐变过渡
+        # mask_grad_x, mask_grad_y = np.gradient(smooth_mask)
+        # mask_boundary = np.sqrt(mask_grad_x**2 + mask_grad_y**2)
+        # boundary_weight = 1.0 - np.clip(mask_boundary * 10, 0, 1)
+        # masked_gradient = gradient * boundary_weight
+
+        return masked_gradient
 
     # --- 光学模型函数 ---
     def pupil_response_function(self, fx, fy):
@@ -124,7 +208,7 @@ class ConFIGInverseLithographyOptimizer:
     def photoresist_model(self, intensity):
         return 1 / (1 + np.exp(-self.a * (intensity - self.tr)))
 
-    # --- ConFIG 核心算法（移植自提供的代码）---
+    # --- ConFIG 核心算法 ---
     def _get_cos_similarity(self, a, b):
         """计算余弦相似度"""
         return torch.dot(a, b) / (a.norm() * b.norm() + 1e-10)
@@ -334,6 +418,13 @@ class ConFIGInverseLithographyOptimizer:
 
         mask = initial_mask.copy()
 
+        # 检测边缘区域，生成更新掩膜
+        print("Detecting edge regions for constrained optimization...")
+        self.update_region_mask = self._detect_edge_region(target, self.edge_pixel_range)
+
+        # 保存更新掩膜用于可视化
+        self.update_mask_vis = self.update_region_mask.copy()
+
         # 初始化CSV日志
         csv_logger = None
         if log_csv:
@@ -346,12 +437,17 @@ class ConFIGInverseLithographyOptimizer:
 
             csv_logger = OptimizationLogger(log_dir=log_dir)
             csv_logger.start_logging(
-                optimizer_type="ConFIG" + ("+Momentum" if self.use_momentum else ""),
-                loss_type="EPE+PE (ConFIG fused)",
+                optimizer_type="EdgeConstrained-ConFIG" + ("+Momentum" if self.use_momentum else ""),
+                loss_type="EPE+PE (Edge-Constrained ConFIG)",
                 learning_rate=learning_rate,
                 initial_loss=init_epe,
                 target_shape=target_shape,
-                config_params={"use_momentum": self.use_momentum, "beta_1": self.beta_1, "beta_2": self.beta_2}
+                config_params={
+                    "use_momentum": self.use_momentum,
+                    "beta_1": self.beta_1,
+                    "beta_2": self.beta_2,
+                    "edge_pixel_range": self.edge_pixel_range
+                }
             )
 
         history = {
@@ -363,17 +459,21 @@ class ConFIGInverseLithographyOptimizer:
             'aerial_images': [],
             'printed_images': [],
             'learning_rates': [],
-            'grad_conflicts': [],  # 记录梯度冲突程度
-            'momentum_norms': [],  # 记录动量范数
+            'grad_conflicts': [],
+            'update_region_size': [],  # 记录实际更新的像素比例
             'csv_log_path': csv_logger.filepath if csv_logger else None
         }
 
         if self.use_momentum:
-            print("Starting Momentum-ConFIG Optimization...")
-            print(f"Config: Momentum ConFIG (beta1={self.beta_1}, beta2={self.beta_2})")
+            print(f"Starting Edge-Constrained Momentum-ConFIG Optimization...")
+            print(
+                f"Config: Edge Range = {self.edge_pixel_range}px, Momentum (beta1={self.beta_1}, beta2={self.beta_2})")
         else:
-            print("Starting Base ConFIG Optimization...")
-            print("Config: Base ConFIG (no momentum)")
+            print(f"Starting Edge-Constrained Base ConFIG Optimization...")
+            print(f"Config: Edge Range = {self.edge_pixel_range}px, No momentum")
+
+        print(
+            f"Update region: {np.sum(self.update_region_mask > 0.1) / self.update_region_mask.size * 100:.1f}% of total area")
 
         best_mask = mask.copy()
         best_epe_loss = float('inf')
@@ -388,12 +488,17 @@ class ConFIGInverseLithographyOptimizer:
             # 使用ConFIG融合梯度
             if self.use_momentum:
                 combined_gradient = self._momentum_config_combine_gradients(grad_epe, grad_pe)
-                # 记录动量范数
-                if self.momentum_state['m'] is not None:
-                    momentum_norm = sum(m.norm().item() for m in self.momentum_state['m']) / 2
-                    history['momentum_norms'].append(momentum_norm)
             else:
                 combined_gradient = self._config_combine_gradients(grad_epe, grad_pe)
+
+            # 应用更新区域掩膜
+            masked_gradient = self._apply_update_mask(combined_gradient, self.update_region_mask)
+
+            # 计算实际更新的像素比例
+            active_pixels = np.sum(np.abs(masked_gradient) > 1e-6)
+            total_pixels = masked_gradient.size
+            update_ratio = active_pixels / total_pixels * 100
+            history['update_region_size'].append(update_ratio)
 
             # 计算梯度冲突度（余弦相似度）
             grad_epe_flat = grad_epe.flatten()
@@ -412,7 +517,7 @@ class ConFIGInverseLithographyOptimizer:
             history['pe_loss'].append(pe_loss_val)
             history['loss'].append(epe_loss_val)  # 主要看EPE
             history['grad_conflicts'].append(conflict_degree)
-            history['grad_norms'].append(np.linalg.norm(combined_gradient))
+            history['grad_norms'].append(np.linalg.norm(masked_gradient))
 
             # 记录最佳结果
             if epe_loss_val < best_epe_loss:
@@ -423,14 +528,14 @@ class ConFIGInverseLithographyOptimizer:
                 csv_logger.log_iteration(
                     iteration=iteration,
                     loss=epe_loss_val,
-                    gradient=combined_gradient,
+                    gradient=masked_gradient,
                     mask=mask,
                     optimizer_state=self.momentum_state if self.use_momentum else {},
                     time_elapsed=time.time() - start_time
                 )
 
-            # 更新mask
-            mask = mask - learning_rate * combined_gradient
+            # 更新mask（只更新掩膜区域）
+            mask = mask - learning_rate * masked_gradient
             mask = np.clip(mask, 0, 1)
 
             history['learning_rates'].append(learning_rate)
@@ -441,40 +546,41 @@ class ConFIGInverseLithographyOptimizer:
                 history['printed_images'].append(printed_image)
 
             if iteration % 10 == 0:
-                momentum_info = ""
-                if self.use_momentum and 'momentum_norms' in history and history['momentum_norms']:
-                    momentum_info = f", Momentum={history['momentum_norms'][-1]:.4f}"
-
                 print(f"Iter {iteration:3d}: EPE={epe_loss_val:.4f}, PE={pe_loss_val:.4f}, "
-                      f"Conflict={conflict_degree:.3f}, Grad={np.linalg.norm(combined_gradient):.4f}{momentum_info}")
+                      f"Conflict={conflict_degree:.3f}, Update={update_ratio:.1f}%, Grad={np.linalg.norm(masked_gradient):.4f}")
 
         if csv_logger:
             csv_logger.close()
 
         total_time = time.time() - start_time
-        print(f"ConFIG Optimization completed in {total_time:.2f}s. Best EPE: {best_epe_loss:.4f}")
+        avg_update_ratio = np.mean(history['update_region_size'])
+        print(f"Edge-Constrained ConFIG Optimization completed in {total_time:.2f}s.")
+        print(f"Best EPE: {best_epe_loss:.4f}")
+        print(f"Average update region: {avg_update_ratio:.1f}% of total pixels")
 
-        return best_mask, history
+        return best_mask, history, self.update_mask_vis
 
 
 # --- 对外暴露的优化函数 ---
-def inverse_lithography_optimization_config(initial_mask, target_image,
-                                            learning_rate=0.01,
-                                            max_iterations=ILT_MAX_ITERATIONS,
-                                            use_momentum=False,
-                                            beta_1=0.9,
-                                            beta_2=0.999,
-                                            **config_params):
+def inverse_lithography_optimization_edge_constrained(initial_mask, target_image,
+                                                      learning_rate=0.01,
+                                                      max_iterations=ILT_MAX_ITERATIONS,
+                                                      use_momentum=False,
+                                                      beta_1=0.9,
+                                                      beta_2=0.999,
+                                                      edge_pixel_range=10,
+                                                      **config_params):
     """
-    ConFIG优化的逆光刻优化入口函数
+    边缘约束的ConFIG逆光刻优化入口函数
     """
-    optimizer = ConFIGInverseLithographyOptimizer(
+    optimizer = EdgeConstrainedConFIGOptimizer(
         use_momentum=use_momentum,
         beta_1=beta_1,
-        beta_2=beta_2
+        beta_2=beta_2,
+        edge_pixel_range=edge_pixel_range
     )
 
-    optimized_mask, history = optimizer.optimize(
+    optimized_mask, history, update_mask = optimizer.optimize(
         initial_mask=initial_mask,
         target=target_image,
         learning_rate=learning_rate,
@@ -482,4 +588,4 @@ def inverse_lithography_optimization_config(initial_mask, target_image,
         **config_params
     )
 
-    return optimized_mask, history
+    return optimized_mask, history, update_mask

@@ -1,13 +1,14 @@
 import time
 import os
+import numpy as np
 from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.lithography_simulation import hopkins_digital_lithography_simulation, photoresist_model
 from core.evaluation_function import pe_loss, epe_loss
-from utils.visualization import plot_comparison, plot_dual_axis_loss_history
+from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization
 
-# 导入ConFIG优化器
-from core.inverse_lithography_config import inverse_lithography_optimization_config
+# 导入边缘约束ConFIG优化器
+from core.inverse_lithography_config import inverse_lithography_optimization_edge_constrained
 
 
 def main():
@@ -28,34 +29,34 @@ def main():
     pe_init = pe_loss(target_image, resist_init)
     epe_init = epe_loss(target_image, resist_init)
 
-    # 3. ConFIG优化（可选择使用动量）
+    # 3. 边缘约束ConFIG优化
     print("\n" + "=" * 70)
-    print(">>> Starting ConFIG Inverse Lithography Optimization")
+    print(">>> Starting Edge-Constrained ConFIG Inverse Lithography Optimization")
     print("=" * 70)
 
     # 配置选项
-    USE_MOMENTUM = True  # 设置为True使用动量ConFIG，False使用基础ConFIG
-    BETA_1 = 0.9  # 一阶动量衰减率
-    BETA_2 = 0.999  # 二阶动量衰减率
+    USE_MOMENTUM = True  # 是否使用动量
+    EDGE_PIXEL_RANGE = 5  # 边缘像素范围
 
-    if USE_MOMENTUM:
-        print("Mode: Momentum ConFIG")
-        print(f"Parameters: beta1={BETA_1}, beta2={BETA_2}")
-    else:
-        print("Mode: Base ConFIG (no momentum)")
-
+    print(f"Configuration:")
+    print(f"  - Edge Pixel Range: {EDGE_PIXEL_RANGE} pixels")
+    print(f"  - Use Momentum: {USE_MOMENTUM}")
+    print(f"  - Beta1: {0.9 if USE_MOMENTUM else 'N/A'}")
+    print(f"  - Beta2: {0.999 if USE_MOMENTUM else 'N/A'}")
     print("-" * 70)
 
-    final_mask, history = inverse_lithography_optimization_config(
+    # 运行边缘约束优化
+    final_mask, history, update_mask = inverse_lithography_optimization_edge_constrained(
         initial_mask=initial_mask,
         target_image=target_image,
-        learning_rate=0.03,
-        max_iterations=1000,
+        learning_rate=0.01,
+        max_iterations=500,
         use_momentum=USE_MOMENTUM,
-        beta_1=BETA_1,
-        beta_2=BETA_2,
+        beta_1=0.9,
+        beta_2=0.999,
+        edge_pixel_range=EDGE_PIXEL_RANGE,
         log_csv=True,
-        experiment_tag=f"{experiment_tag}_config{'m' if USE_MOMENTUM else ''}",
+        experiment_tag=f"{experiment_tag}_edge_constrained",
         log_dir="logs"
     )
 
@@ -70,12 +71,23 @@ def main():
 
     # 5. 输出统计
     print("\n" + "=" * 70)
-    print("CONFIG OPTIMIZATION RESULTS")
+    print("EDGE-CONSTRAINED CONFIG OPTIMIZATION RESULTS")
     print("=" * 70)
-    print(f"Optimization Mode: {'Momentum-ConFIG' if USE_MOMENTUM else 'Base-ConFIG'}")
+    print(
+        f"Optimization Mode: {'Momentum-ConFIG' if USE_MOMENTUM else 'Base-ConFIG'} (Edge Range: {EDGE_PIXEL_RANGE}px)")
     print(f"Total Process Time: {end_time - start_time:.2f}s")
     print(f"PE  Loss: {pe_init:.2f} -> {pe_final:.2f} (Improvement: {pe_init - pe_final:.2f})")
     print(f"EPE Loss: {epe_init:.4f} -> {epe_final:.4f} (Improvement: {epe_init - epe_final:.4f})")
+
+    # 输出更新区域统计
+    if 'update_region_size' in history:
+        avg_update = np.mean(history['update_region_size'])
+        max_update = np.max(history['update_region_size'])
+        min_update = np.min(history['update_region_size'])
+        print(f"\nUpdate Region Analysis:")
+        print(f"  Average: {avg_update:.1f}% of pixels updated")
+        print(f"  Maximum: {max_update:.1f}% of pixels updated")
+        print(f"  Minimum: {min_update:.1f}% of pixels updated")
 
     # 输出梯度冲突分析
     if 'grad_conflicts' in history:
@@ -88,23 +100,21 @@ def main():
         print(f"  Minimum: {min_conflict:.3f}")
         print(f"  (0 = no conflict, 1 = maximum conflict)")
 
-    # 输出动量信息（如果使用动量）
-    if USE_MOMENTUM and 'momentum_norms' in history:
-        avg_momentum = sum(history['momentum_norms']) / len(history['momentum_norms'])
-        max_momentum = max(history['momentum_norms'])
-        min_momentum = min(history['momentum_norms'])
-        print(f"\nMomentum Analysis:")
-        print(f"  Average Norm: {avg_momentum:.4f}")
-        print(f"  Maximum Norm: {max_momentum:.4f}")
-        print(f"  Minimum Norm: {min_momentum:.4f}")
-
     print("=" * 70)
 
     # 6. 保存结果
     print(f"\nSaving optimized mask to {OUTPUT_MASK_PATH}...")
     save_image(final_mask, OUTPUT_MASK_PATH)
 
+    # 保存更新掩膜
+    update_mask_path = OUTPUT_MASK_PATH.replace('.png', '_update_mask.png')
+    print(f"Saving update region mask to {update_mask_path}...")
+    save_image(update_mask, update_mask_path)
+
     # 7. 可视化
+    print(f"\nGenerating visualizations...")
+
+    # 标准对比图
     print(f"Saving comparison plot to {RESULTS_IMAGE_PATH}...")
     plot_comparison(
         target_image, aerial_init, resist_init,
@@ -113,6 +123,7 @@ def main():
         save_path=RESULTS_IMAGE_PATH
     )
 
+    # 损失历史图
     print(f"Saving loss history plot to {FITNESS_PLOT_PATH}...")
 
     # 准备可视化数据
@@ -121,14 +132,51 @@ def main():
         'Gradient Conflict': history['grad_conflicts']
     }
 
-    # 如果使用动量，添加动量信息
-    if USE_MOMENTUM and 'momentum_norms' in history:
-        additional_metrics['Momentum Norm'] = history['momentum_norms']
+    # 添加更新区域信息
+    if 'update_region_size' in history:
+        additional_metrics['Update Region %'] = history['update_region_size']
 
     history_enhanced['additional_metrics'] = additional_metrics
 
     plot_dual_axis_loss_history(history_enhanced, save_path=FITNESS_PLOT_PATH)
 
+    # 边缘约束可视化
+    edge_vis_path = FITNESS_PLOT_PATH.replace('.png', '_edge_constraint.png')
+    print(f"Saving edge constraint visualization to {edge_vis_path}...")
+    plot_edge_constraint_visualization(
+        target_image=target_image,
+        initial_mask=initial_mask,
+        final_mask=final_mask,
+        update_mask=update_mask,
+        edge_pixel_range=EDGE_PIXEL_RANGE,
+        save_path=edge_vis_path
+    )
+
+    # 背景区域稳定性分析
+    print("\nBackground Stability Analysis:")
+
+    # 检测背景区域（目标图像中接近0的区域）
+    background_mask = (target_image < 0.1).astype(np.float64)
+    background_pixels = np.sum(background_mask > 0.5)
+
+    if background_pixels > 0:
+        # 计算初始掩膜和最终掩膜在背景区域的差异
+        background_change = np.abs(final_mask - initial_mask) * background_mask
+        avg_background_change = np.sum(background_change) / background_pixels
+        max_background_change = np.max(background_change)
+
+        print(f"  Background pixels: {background_pixels} ({background_pixels / target_image.size * 100:.1f}% of total)")
+        print(f"  Average change in background: {avg_background_change:.6f}")
+        print(f"  Maximum change in background: {max_background_change:.6f}")
+
+        if avg_background_change < 0.01:
+            print("  ✓ Background is well preserved (low change)")
+        else:
+            print("  ⚠ Background has noticeable changes")
+    else:
+        print("  No significant background region detected")
+
+    print("\nOptimization completed successfully!")
 
 
 if __name__ == "__main__":

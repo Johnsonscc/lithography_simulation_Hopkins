@@ -4,11 +4,11 @@ import matplotlib.pyplot as plt
 LAMBDA = 405  # 波长（单位：纳米）
 Z = 803000000  # 距离（单位：纳米）774
 DX = DY = 7560  # 像素尺寸（单位：纳米）
-LX = LY = 100  # 图像尺寸（单位：像素）
+LX = LY = 1000  # 图像尺寸（单位：像素）
 N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
 NA = 0.5  # 数值孔径（无量纲）
-K_SVD = 3 #奇异值数目（无量纲）
+K_SVD = 5 #奇异值数目（无量纲）
 
 '''
 NA = 0.5  # 数值孔径（无量纲）
@@ -26,7 +26,7 @@ TY = 8560  # 微镜周期（y方向）（单位：纳米）
 
 # 逆光刻优化参数 - 整理后的推荐参数
 ILT_LEARNING_RATE = 0.01
-ILT_K_SVD = 3
+ILT_K_SVD = 5
 ILT_MAX_ITERATIONS = 200
 
 # 优化器特定参数
@@ -67,12 +67,12 @@ ILT_OPTIMIZER_CONFIGS = {
 OPTIMIZER_TYPE='cg'
 
 # 文件路径
-INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
-TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/t100_inverse.png"
+INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
+TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
 
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/test/optimized_mask_t100_inverse.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/test/results_comparison_t100_inverse.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/test/fitness_evolution_t100_inverse.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/test/optimized_mask_gcd_45nm_origin_01.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/test/results_comparison_gcd_45nm_origin_01.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/test/fitness_evolution_gcd_45nm_origin_01.png"
 
 # 可视化参数
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
