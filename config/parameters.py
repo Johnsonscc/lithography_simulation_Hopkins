@@ -25,21 +25,21 @@ TX = 8560  # 微镜周期（x方向）（单位：纳米）
 TY = 8560  # 微镜周期（y方向）（单位：纳米）
 
 # 逆光刻优化参数 - 整理后的推荐参数
-ILT_LEARNING_RATE = 0.01
+ILT_LEARNING_RATE = 0.1
 ILT_K_SVD = 5
-ILT_MAX_ITERATIONS = 200
+ILT_MAX_ITERATIONS = 100
 
 # 优化器特定参数
 # 优化器特定参数
-ILT_OPTIMIZER_CONFIGS = {
+ILT_OPTIMIZER_adamS = {
     'sgd': {
         'learning_rate': 0.1,
         'params': {}
     },
     'momentum': {
-        'learning_rate': 0.05,
+        'learning_rate': 0.1,
         'params': {
-            'momentum': 0.9
+            'momentum': 0.95
         }
     },
     'rmsprop': {
@@ -58,7 +58,7 @@ ILT_OPTIMIZER_CONFIGS = {
         'params': {
             'beta1': 0.9,
             'beta2': 0.999,
-            'epsilon': 1e-2,
+            'epsilon': 1e-4,
         }
     }
 }
@@ -70,11 +70,11 @@ OPTIMIZER_TYPE='cg'
 INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
 TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
 
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/test/optimized_mask_gcd_45nm_origin_01.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/test/results_comparison_gcd_45nm_origin_01.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/test/fitness_evolution_gcd_45nm_origin_01.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/stage1/optimized_mask_gcd_45nm_origin_01_adam.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/stage1/results_comparison_gcd_45nm_origin_01_adam.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/stage1/fitness_evolution_gcd_45nm_origin_01_adam.png"
 
-# 可视化参数
+# 可视化参数1
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
 plt.rcParams['axes.unicode_minus'] = False  # 解决保存图像是负号'-'显示为方块的问题
 plt.rcParams['figure.dpi'] = 300

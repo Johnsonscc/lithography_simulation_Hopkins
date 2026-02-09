@@ -6,7 +6,6 @@ import cv2
 from config.parameters import *
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from scipy.sparse.linalg import svds
-from scipy.ndimage import binary_dilation, binary_erosion
 from tqdm import tqdm
 from scipy.sparse import lil_matrix, csr_matrix
 from utils.optimization_logger import OptimizationLogger
@@ -14,16 +13,15 @@ from utils.optimization_logger import OptimizationLogger
 logger = logging.getLogger(__name__)
 
 
-class EdgeConstrainedConFIGOptimizer:
+class BaseEdgeConFIGOptimizer:
     """
-    边缘约束的ConFIG逆光刻优化器
-    只优化图案边缘附近指定范围内的像素，保持背景稳定
+    基础边缘约束ConFIG优化器
+    使用固定权重融合PE和EPE梯度
     """
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
-                 use_momentum=False, beta_1=0.9, beta_2=0.999,
-                 edge_pixel_range=10):
+                 edge_pixel_range=5):
         # 光学参数
         self.lambda_ = lambda_
         self.na = na
@@ -31,122 +29,61 @@ class EdgeConstrainedConFIGOptimizer:
         self.lx = lx
         self.ly = ly
         self.k_svd = k_svd
-
-        # 光刻胶参数
         self.a = a
         self.tr = tr
 
-        # ConFIG 配置
-        self.use_momentum = use_momentum
-        self.beta_1 = beta_1
-        self.beta_2 = beta_2
-        self.edge_pixel_range = edge_pixel_range  # 边缘像素范围
+        # 边缘约束参数
+        self.edge_pixel_range = edge_pixel_range
+        self.edge_mask = None
 
-        # 动量状态
-        if use_momentum:
-            self._init_momentum_state()
+        # 固定权重参数
+        self.pe_weight = 0.4
+        self.epe_weight = 0.4
 
-        # 预计算TCC SVD分解
+        # 预计算
         self.singular_values = None
         self.eigen_functions = None
         self._precompute_tcc_svd()
 
-        # 边缘区域掩膜
-        self.update_region_mask = None
+        logger.info(f"BaseEdgeConFIGOptimizer initialized (edge={edge_pixel_range})")
 
-        logger.info(
-            f"EdgeConstrainedConFIGOptimizer initialized (edge_range={edge_pixel_range}, momentum={use_momentum})")
-
-    def _init_momentum_state(self):
-        """初始化动量状态"""
-        self.momentum_state = {
-            'm': None,  # 一阶动量
-            's': None,  # 二阶动量
-            't': 0,  # 时间步
-            't_grads': [0, 0]  # 每个梯度的更新次数（EPE和PE）
-        }
-
-    def _detect_edge_region(self, target, edge_pixel_range=10):
+    def _detect_edge_region(self, target):
         """
-        检测目标图像的边缘区域，生成更新区域掩膜
-
-        参数:
-            target: 二值目标图像 (0或1)
-            edge_pixel_range: 边缘两侧的像素范围
-
-        返回:
-            update_mask: 更新区域掩膜 (1表示需要更新，0表示保持原样)
+        基于目标的稳定边缘检测
         """
-        # 确保目标是二值图像
         binary_target = (target > 0.5).astype(np.uint8)
 
-        # 方法1: 使用Sobel算子检测边缘
-        sobelx = cv2.Sobel(binary_target, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(binary_target, cv2.CV_64F, 0, 1, ksize=3)
-        edge_magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
+        # 方法1: Canny边缘检测
+        edges = cv2.Canny(binary_target * 255, 30, 100)
+        edges = edges.astype(np.float32) / 255.0
 
-        # 方法2: 使用Canny边缘检测
-        # edges = cv2.Canny((binary_target * 255).astype(np.uint8), 50, 150)
-        # edge_magnitude = edges.astype(np.float64) / 255.0
+        # 方法2: 梯度幅值
+        grad_y, grad_x = np.gradient(binary_target.astype(np.float32))
+        grad_magnitude = np.sqrt(grad_x ** 2 + grad_y ** 2)
+        grad_edges = (grad_magnitude > 0.1).astype(np.float32)
 
-        # 方法3: 使用形态学梯度检测边缘 (膨胀-腐蚀)
-        kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(binary_target, kernel, iterations=1)
-        eroded = cv2.erode(binary_target, kernel, iterations=1)
-        morphological_edge = dilated - eroded
+        # 组合两种检测方法
+        combined_edges = np.clip(edges + 0.5 * grad_edges, 0, 1)
 
-        # 组合边缘检测结果
-        combined_edge = edge_magnitude + morphological_edge
-        edge_binary = (combined_edge > 0).astype(np.uint8)
-
-        # 对边缘区域进行膨胀，扩大更新区域
-        if edge_pixel_range > 0:
-            # 创建圆形结构元素
-            kernel_size = 2 * edge_pixel_range + 1
+        # 扩展边缘区域
+        if self.edge_pixel_range > 0:
+            kernel_size = 2 * self.edge_pixel_range + 1
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-            update_mask = cv2.dilate(edge_binary, kernel, iterations=1)
+            edge_mask = cv2.dilate(combined_edges, kernel, iterations=1)
         else:
-            update_mask = edge_binary
+            edge_mask = combined_edges
 
-        # 也考虑图案内部区域（可能需要微调）
-        # 对原始图案进行腐蚀，保留图案内部区域
-        pattern_inner = cv2.erode(binary_target, kernel, iterations=edge_pixel_range // 2)
-        update_mask = np.logical_or(update_mask, pattern_inner).astype(np.float64)
+        # 平滑过渡
+        edge_mask = cv2.GaussianBlur(edge_mask, (7, 7), 1.5)
 
-        # 确保边缘平滑
-        update_mask = cv2.GaussianBlur(update_mask.astype(np.float32), (5, 5), 1.0)
+        return edge_mask
 
-        logger.info(
-            f"Edge region detection completed. Update region: {np.sum(update_mask > 0.1) / update_mask.size * 100:.1f}% of total area")
-
-        return update_mask
-
-    def _apply_update_mask(self, gradient, update_mask):
+    def _apply_edge_constraint(self, gradient, edge_mask):
         """
-        将梯度限制在更新区域内
-
-        参数:
-            gradient: 原始梯度
-            update_mask: 更新区域掩膜
-
-        返回:
-            masked_gradient: 掩膜后的梯度
+        应用边缘约束
         """
-        # 对更新掩膜进行平滑处理，避免硬边界
-        smooth_mask = cv2.GaussianBlur(update_mask, (3, 3), 0.5)
+        return gradient * edge_mask
 
-        # 应用掩膜
-        masked_gradient = gradient * smooth_mask
-
-        # 可选：在掩膜边界处添加渐变过渡
-        # mask_grad_x, mask_grad_y = np.gradient(smooth_mask)
-        # mask_boundary = np.sqrt(mask_grad_x**2 + mask_grad_y**2)
-        # boundary_weight = 1.0 - np.clip(mask_boundary * 10, 0, 1)
-        # masked_gradient = gradient * boundary_weight
-
-        return masked_gradient
-
-    # --- 光学模型函数 ---
     def pupil_response_function(self, fx, fy):
         r = np.sqrt(fx ** 2 + fy ** 2)
         r_max = self.na / self.lambda_
@@ -156,22 +93,19 @@ class EdgeConstrainedConFIGOptimizer:
     def light_source_function(self, fx, fy):
         r = np.sqrt(fx ** 2 + fy ** 2)
         r_max = self.sigma * self.na / self.lambda_
-        J = np.where(r <= r_max,
-                     self.lambda_ ** 2 / (np.pi * (self.sigma * self.na) ** 2), 0.0)
+        J = np.where(r <= r_max, self.lambda_ ** 2 / (np.pi * (self.sigma * self.na) ** 2), 0.0)
         return J
 
-    # --- TCC SVD 预计算 ---
     def _compute_full_tcc_matrix(self, fx, fy, sparsity_threshold=0.001):
-        """构建 TCC 矩阵"""
         Lx, Ly = len(fx), len(fy)
         FX, FY = np.meshgrid(fx, fy, indexing='xy')
         J = self.light_source_function(FX, FY)
         P = self.pupil_response_function(FX, FY)
         tcc_kernel = J * P
+
         TCC_sparse = lil_matrix((Lx * Ly, Lx * Ly), dtype=np.complex128)
         neighborhood_radius = 10
-
-        for i in tqdm(range(Lx), desc="TCC Construction"):
+        for i in tqdm(range(Lx), desc="Base TCC Construction"):
             for j in range(Ly):
                 if np.abs(tcc_kernel[i, j]) > sparsity_threshold:
                     for m in range(max(0, i - neighborhood_radius), min(Lx, i + neighborhood_radius + 1)):
@@ -180,174 +114,38 @@ class EdgeConstrainedConFIGOptimizer:
                                 idx1 = i * Ly + j
                                 idx2 = m * Ly + n
                                 TCC_sparse[idx1, idx2] = tcc_kernel[i, j] * np.conj(tcc_kernel[m, n])
+        return csr_matrix(TCC_sparse)
 
-        TCC_csr = csr_matrix(TCC_sparse)
-        return TCC_csr
-
-    def _svd_of_tcc_matrix(self, TCC_csr, k, Lx, Ly):
+    def _svd_of_tcc_matrix(self, TCC_csr, k, Lx=LX, Ly=LY):
         k_actual = min(k, min(TCC_csr.shape) - 1)
+        print(f"TCC SVD precomputation completed with {k_actual} singular values")
+
         U, S, Vh = svds(TCC_csr, k=k_actual)
         significant_mask = S > (np.max(S) * 0.01)
-        S = S[significant_mask]
-        U = U[:, significant_mask]
+        S, U = S[significant_mask], U[:, significant_mask]
         idx = np.argsort(S)[::-1]
-        S = S[idx]
-        U = U[:, idx]
+        S, U = S[idx], U[:, idx]
+
         H_functions = [U[:, i].reshape(Lx, Ly) for i in range(len(S))]
         return S, H_functions
 
     def _precompute_tcc_svd(self):
+        """TCC SVD预计算"""
         max_freq = self.na / self.lambda_
         freq = 2 * max_freq
         fx = np.linspace(-freq, freq, self.lx)
         fy = np.linspace(-freq, freq, self.ly)
         TCC_4d = self._compute_full_tcc_matrix(fx, fy)
-        self.singular_values, self.eigen_functions = self._svd_of_tcc_matrix(TCC_4d, self.k_svd, self.lx, self.ly)
-        logger.info(f"TCC SVD precomputation completed with {len(self.singular_values)} singular values")
+        self.singular_values, self.eigen_functions = self._svd_of_tcc_matrix(TCC_4d, self.k_svd)
 
     def photoresist_model(self, intensity):
         return 1 / (1 + np.exp(-self.a * (intensity - self.tr)))
 
-    # --- ConFIG 核心算法 ---
-    def _get_cos_similarity(self, a, b):
-        """计算余弦相似度"""
-        return torch.dot(a, b) / (a.norm() * b.norm() + 1e-10)
-
-    def _unit_vector(self, v):
-        """单位化向量"""
-        norm = v.norm()
-        return v / norm if norm > 0 else torch.zeros_like(v)
-
-    def _transfer_coef_double(self, weights, unit_1, unit_2, unit_or1, unit_or2):
-        """传输系数计算（双梯度情况）"""
-        w1, w2 = weights
-        a1 = w1 * (torch.dot(unit_1, unit_or1))
-        a2 = w2 * (torch.dot(unit_2, unit_or2))
-        return a1, a2
-
-    def _config_combine_gradients(self, grad_epe, grad_pe, losses=None):
+    def _compute_gradients(self, mask, target):
         """
-        使用完整的ConFIG算法融合EPE和PE梯度
+        梯度计算
         """
-        # 转换为PyTorch tensor
-        g1 = torch.tensor(grad_epe.flatten(), dtype=torch.float64)
-        g2 = torch.tensor(grad_pe.flatten(), dtype=torch.float64)
-
-        # 计算范数和单位向量
-        norm_1 = g1.norm()
-        norm_2 = g2.norm()
-
-        if norm_1 < 1e-10 or norm_2 < 1e-10:
-            # 如果有一个梯度很小，直接返回加权和
-            return 0.5 * grad_epe + 0.5 * grad_pe
-
-        unit_1 = g1 / norm_1
-        unit_2 = g2 / norm_2
-
-        # 计算余弦相似度
-        cos_angle = self._get_cos_similarity(g1, g2)
-
-        # 计算正交分量
-        or_2 = g1 - norm_1 * cos_angle * unit_2
-        or_1 = g2 - norm_2 * cos_angle * unit_1
-
-        unit_or1 = self._unit_vector(or_1)
-        unit_or2 = self._unit_vector(or_2)
-
-        # 等权重
-        weights = torch.tensor([0.5, 0.5], dtype=torch.float64)
-
-        # 计算系数
-        coef_1, coef_2 = self._transfer_coef_double(
-            weights, unit_1, unit_2, unit_or1, unit_or2
-        )
-
-        # 最优方向
-        best_direction = coef_1 * unit_or1 + coef_2 * unit_or2
-
-        # 投影长度重缩放
-        proj1 = torch.dot(g1, best_direction) / best_direction.norm()
-        proj2 = torch.dot(g2, best_direction) / best_direction.norm()
-        final_length = 0.5 * (proj1 + proj2)
-        final_direction = best_direction * final_length / best_direction.norm()
-
-        # 转换回numpy并reshape
-        return final_direction.numpy().reshape(grad_epe.shape)
-
-    def _momentum_config_combine_gradients(self, grad_epe, grad_pe, losses=None):
-        """
-        使用动量ConFIG算法融合梯度
-        """
-        # 转换为PyTorch tensor
-        g1 = torch.tensor(grad_epe.flatten(), dtype=torch.float64)
-        g2 = torch.tensor(grad_pe.flatten(), dtype=torch.float64)
-
-        # 计算范数和单位向量
-        norm_1 = g1.norm()
-        norm_2 = g2.norm()
-
-        if norm_1 < 1e-10 or norm_2 < 1e-10:
-            return 0.5 * grad_epe + 0.5 * grad_pe
-
-        # 更新一阶动量
-        if self.momentum_state['m'] is None:
-            self.momentum_state['m'] = [torch.zeros_like(g1), torch.zeros_like(g2)]
-
-        self.momentum_state['t'] += 1
-        self.momentum_state['t_grads'][0] += 1
-        self.momentum_state['t_grads'][1] += 1
-
-        # 更新动量
-        self.momentum_state['m'][0] = self.beta_1 * self.momentum_state['m'][0] + (1 - self.beta_1) * g1
-        self.momentum_state['m'][1] = self.beta_1 * self.momentum_state['m'][1] + (1 - self.beta_1) * g2
-
-        # 计算偏置修正的动量
-        m1_hat = self.momentum_state['m'][0] / (1 - self.beta_1 ** self.momentum_state['t_grads'][0])
-        m2_hat = self.momentum_state['m'][1] / (1 - self.beta_1 ** self.momentum_state['t_grads'][1])
-
-        # 将修正后的动量堆叠
-        m_hats = torch.stack([m1_hat, m2_hat], dim=0)
-
-        # 使用基础ConFIG融合动量向量
-        unit_vectors = m_hats / m_hats.norm(dim=1).unsqueeze(1)
-        unit_vectors = torch.nan_to_num(unit_vectors, 0)
-
-        # 等权重
-        weights = torch.tensor([0.5, 0.5], dtype=torch.float64)
-
-        # 使用最小二乘法求解最优方向
-        best_direction = torch.linalg.lstsq(unit_vectors, weights).solution
-
-        # 计算伪梯度（用于二阶动量估计）
-        fake_m = best_direction * (1 - self.beta_1 ** self.momentum_state['t'])
-        fake_grad = (fake_m - self.beta_1 * self.momentum_state.get('fake_m', torch.zeros_like(fake_m))) / (
-                    1 - self.beta_1)
-        self.momentum_state['fake_m'] = fake_m
-
-        # 更新二阶动量
-        if self.momentum_state['s'] is None:
-            self.momentum_state['s'] = torch.zeros_like(best_direction)
-
-        self.momentum_state['s'] = self.beta_2 * self.momentum_state['s'] + (1 - self.beta_2) * (fake_grad ** 2)
-        s_hat = self.momentum_state['s'] / (1 - self.beta_2 ** self.momentum_state['t'])
-
-        # 最终梯度
-        final_grad = best_direction / (torch.sqrt(s_hat) + 1e-8)
-
-        # 投影长度重缩放
-        proj1 = torch.dot(g1, final_grad) / final_grad.norm()
-        proj2 = torch.dot(g2, final_grad) / final_grad.norm()
-        final_length = 0.5 * (proj1 + proj2)
-        final_direction = final_grad * final_length / final_grad.norm()
-
-        return final_direction.numpy().reshape(grad_epe.shape)
-
-    # --- 核心：梯度计算（分别计算EPE和PE梯度）---
-    def _compute_gradients(self, mask, target, epsilon=1e-10):
-        """
-        分别计算EPE和PE的梯度
-        """
-        # 1. 前向传播
+        # 前向传播
         M_fft = fftshift(fft2(mask))
         A_i_list = []
         intensity = np.zeros((self.lx, self.ly), dtype=np.float64)
@@ -358,32 +156,35 @@ class EdgeConstrainedConFIGOptimizer:
             intensity += s_val * (np.abs(A_i) ** 2)
             A_i_list.append(A_i)
 
-        # 归一化光强
+        # 归一化
         intensity_min = np.min(intensity)
         intensity_max = np.max(intensity)
-        denom = intensity_max - intensity_min if (intensity_max - intensity_min) > epsilon else 1.0
-        intensity_norm = (intensity - intensity_min) / denom
+        intensity_range = intensity_max - intensity_min
 
-        # 光刻胶显影P
-        P = self.photoresist_model(intensity_norm)
+        if intensity_range < 1e-10:
+            intensity_norm = np.zeros_like(intensity)
+        else:
+            intensity_norm = (intensity - intensity_min) / intensity_range
+            intensity_norm = np.clip(intensity_norm, -10, 10)
 
-        # 2. 计算损失
-        pe_loss_val = np.sum((P - target) ** 2)
+        # 光刻胶显影
+        exponent = -self.a * (intensity_norm - self.tr)
+        exponent = np.clip(exponent, -100, 100)
+        P = 1 / (1 + np.exp(exponent))
 
-        # 计算边缘权重W（用于EPE）
-        grad_y, grad_x = np.gradient(P)
-        W = np.sqrt(grad_x ** 2 + grad_y ** 2 + epsilon)
-        if np.max(W) > 0:
-            W = W / np.max(W)
+        # 计算PE损失
+        pe_loss = np.sum((P - target) ** 2)
 
-        epe_loss_val = np.sum(((P - target) ** 2) * W)
+        # 计算边缘权重
+        target_edges = self._detect_edge_region(target)
 
-        # 3. 计算PE梯度（全局保真度）
-        dJ_pe_dP = 2 * (P - target)  # PE: 均匀权重
-        dP_dI_norm = self.a * P * (1 - P)
-        dI_norm_dI = 1.0 / denom
-        dP_dI = dP_dI_norm * dI_norm_dI
-        dJ_pe_dI = dJ_pe_dP * dP_dI
+        # EPE损失
+        epe_loss = np.sum(((P - target) ** 2) * target_edges)
+
+        # 计算PE梯度
+        dP_dI = self.a * P * (1 - P)
+        dJ_pe_dP = 2 * (P - target)
+        dJ_pe_dI = dJ_pe_dP * dP_dI / intensity_range if intensity_range > 1e-10 else dJ_pe_dP * dP_dI
 
         grad_pe = np.zeros_like(mask, dtype=np.complex128)
         for i, (s_val, H_i, A_i) in enumerate(zip(
@@ -393,9 +194,9 @@ class EdgeConstrainedConFIGOptimizer:
             dJ_dA_i_fft = fftshift(fft2(dJ_dA_i))
             grad_pe += ifft2(ifftshift(dJ_dA_i_fft * np.conj(H_i)))
 
-        # 4. 计算EPE梯度（边缘精度）
-        dJ_epe_dP = 2 * (P - target) * W  # EPE: 边缘加权
-        dJ_epe_dI = dJ_epe_dP * dP_dI
+        # 计算EPE梯度
+        dJ_epe_dP = 2 * (P - target) * target_edges
+        dJ_epe_dI = dJ_epe_dP * dP_dI / intensity_range if intensity_range > 1e-10 else dJ_epe_dP * dP_dI
 
         grad_epe = np.zeros_like(mask, dtype=np.complex128)
         for i, (s_val, H_i, A_i) in enumerate(zip(
@@ -405,182 +206,314 @@ class EdgeConstrainedConFIGOptimizer:
             dJ_dA_i_fft = fftshift(fft2(dJ_dA_i))
             grad_epe += ifft2(ifftshift(dJ_dA_i_fft * np.conj(H_i)))
 
-        return (epe_loss_val, pe_loss_val,
-                np.real(grad_epe), np.real(grad_pe),
+        return (pe_loss, epe_loss,
+                np.real(grad_pe), np.real(grad_epe),
                 intensity_norm, P)
 
-    # --- 优化主循环 ---
-    def optimize(self, initial_mask, target, learning_rate=0.01,
+    def optimize(self, initial_mask, target, learning_rate=0.1,
                  max_iterations=ILT_MAX_ITERATIONS,
-                 log_csv=True,
-                 log_dir="logs",
-                 experiment_tag=""):
+                 log_csv=True, log_dir="logs", experiment_tag=""):
 
         mask = initial_mask.copy()
 
-        # 检测边缘区域，生成更新掩膜
-        print("Detecting edge regions for constrained optimization...")
-        self.update_region_mask = self._detect_edge_region(target, self.edge_pixel_range)
+        # 初始化边缘掩膜
+        self.edge_mask = self._detect_edge_region(target)
+        update_ratio = np.sum(self.edge_mask > 0.1) / self.edge_mask.size * 100
+        print(f"Edge region: {update_ratio:.1f}% of total area")
 
-        # 保存更新掩膜用于可视化
-        self.update_mask_vis = self.update_region_mask.copy()
+        # 初始化
+        best_mask = mask.copy()
+        best_combined_loss = float('inf')
 
-        # 初始化CSV日志
+        # 日志
         csv_logger = None
         if log_csv:
-            target_shape = f"{target.shape[0]}x{target.shape[1]}"
-            if experiment_tag:
-                target_shape = f"{target_shape}_{experiment_tag}"
-
-            # 计算初始损失
-            init_epe, init_pe, _, _, _, _ = self._compute_gradients(initial_mask, target)
-
             csv_logger = OptimizationLogger(log_dir=log_dir)
+            init_pe, init_epe, _, _, _, _ = self._compute_gradients(mask, target)
             csv_logger.start_logging(
-                optimizer_type="EdgeConstrained-ConFIG" + ("+Momentum" if self.use_momentum else ""),
-                loss_type="EPE+PE (Edge-Constrained ConFIG)",
+                optimizer_type="Base-Edge-ConFIG",
+                loss_type="PE+EPE (Fixed Weights)",
                 learning_rate=learning_rate,
-                initial_loss=init_epe,
-                target_shape=target_shape,
+                initial_loss=init_pe + init_epe,
+                target_shape=f"{target.shape}",
                 config_params={
-                    "use_momentum": self.use_momentum,
-                    "beta_1": self.beta_1,
-                    "beta_2": self.beta_2,
-                    "edge_pixel_range": self.edge_pixel_range
+                    "edge_pixel_range": self.edge_pixel_range,
+                    "pe_weight": self.pe_weight,
+                    "epe_weight": self.epe_weight
                 }
             )
 
         history = {
-            'pe_loss': [],
-            'epe_loss': [],
-            'loss': [],
-            'grad_norms': [],
-            'masks': [],
-            'aerial_images': [],
-            'printed_images': [],
-            'learning_rates': [],
-            'grad_conflicts': [],
-            'update_region_size': [],  # 记录实际更新的像素比例
-            'csv_log_path': csv_logger.filepath if csv_logger else None
+            'pe_loss': [], 'epe_loss': [], 'combined_loss': [],
+            'grad_norms': []
         }
-
-        if self.use_momentum:
-            print(f"Starting Edge-Constrained Momentum-ConFIG Optimization...")
-            print(
-                f"Config: Edge Range = {self.edge_pixel_range}px, Momentum (beta1={self.beta_1}, beta2={self.beta_2})")
-        else:
-            print(f"Starting Edge-Constrained Base ConFIG Optimization...")
-            print(f"Config: Edge Range = {self.edge_pixel_range}px, No momentum")
-
-        print(
-            f"Update region: {np.sum(self.update_region_mask > 0.1) / self.update_region_mask.size * 100:.1f}% of total area")
-
-        best_mask = mask.copy()
-        best_epe_loss = float('inf')
 
         start_time = time.time()
 
+        print(f"Starting Base-Edge-ConFIG Optimization ({max_iterations} iterations)")
+        print(f"Configuration: edge_range={self.edge_pixel_range}")
+
         for iteration in range(max_iterations):
-            # 计算EPE和PE梯度
-            epe_loss_val, pe_loss_val, grad_epe, grad_pe, aerial_image, printed_image = \
+            # 计算梯度
+            pe_loss, epe_loss, grad_pe, grad_epe, aerial, printed = \
                 self._compute_gradients(mask, target)
 
-            # 使用ConFIG融合梯度
-            if self.use_momentum:
-                combined_gradient = self._momentum_config_combine_gradients(grad_epe, grad_pe)
-            else:
-                combined_gradient = self._config_combine_gradients(grad_epe, grad_pe)
+            # 固定权重融合梯度
+            combined_gradient = self.pe_weight * grad_pe + self.epe_weight * grad_epe
 
-            # 应用更新区域掩膜
-            masked_gradient = self._apply_update_mask(combined_gradient, self.update_region_mask)
+            # 应用边缘约束
+            edge_constrained_gradient = self._apply_edge_constraint(combined_gradient, self.edge_mask)
 
-            # 计算实际更新的像素比例
-            active_pixels = np.sum(np.abs(masked_gradient) > 1e-6)
-            total_pixels = masked_gradient.size
-            update_ratio = active_pixels / total_pixels * 100
-            history['update_region_size'].append(update_ratio)
-
-            # 计算梯度冲突度（余弦相似度）
-            grad_epe_flat = grad_epe.flatten()
-            grad_pe_flat = grad_pe.flatten()
-            norm_epe = np.linalg.norm(grad_epe_flat)
-            norm_pe = np.linalg.norm(grad_pe_flat)
-
-            if norm_epe > 0 and norm_pe > 0:
-                cos_sim = np.dot(grad_epe_flat, grad_pe_flat) / (norm_epe * norm_pe)
-                conflict_degree = 1 - abs(cos_sim)  # 0: 无冲突, 1: 完全冲突
-            else:
-                conflict_degree = 0
+            # 计算组合损失
+            combined_loss = pe_loss * self.pe_weight + epe_loss * self.epe_weight
 
             # 记录历史
-            history['epe_loss'].append(epe_loss_val)
-            history['pe_loss'].append(pe_loss_val)
-            history['loss'].append(epe_loss_val)  # 主要看EPE
-            history['grad_conflicts'].append(conflict_degree)
-            history['grad_norms'].append(np.linalg.norm(masked_gradient))
+            history['pe_loss'].append(pe_loss)
+            history['epe_loss'].append(epe_loss)
+            history['combined_loss'].append(combined_loss)
+            history['grad_norms'].append(np.linalg.norm(edge_constrained_gradient))
 
-            # 记录最佳结果
-            if epe_loss_val < best_epe_loss:
-                best_epe_loss = epe_loss_val
+            # 保存最佳结果
+            if combined_loss < best_combined_loss:
+                best_combined_loss = combined_loss
                 best_mask = mask.copy()
 
+            # 日志记录
             if csv_logger:
                 csv_logger.log_iteration(
                     iteration=iteration,
-                    loss=epe_loss_val,
-                    gradient=masked_gradient,
+                    loss=combined_loss,
+                    gradient=edge_constrained_gradient,
                     mask=mask,
-                    optimizer_state=self.momentum_state if self.use_momentum else {},
+                    optimizer_state={
+                        "pe_weight": self.pe_weight,
+                        "epe_weight": self.epe_weight
+                    },
                     time_elapsed=time.time() - start_time
                 )
 
-            # 更新mask（只更新掩膜区域）
-            mask = mask - learning_rate * masked_gradient
+            # 更新掩膜
+            mask = mask - learning_rate * edge_constrained_gradient
             mask = np.clip(mask, 0, 1)
 
-            history['learning_rates'].append(learning_rate)
-
-            if iteration % 20 == 0 or iteration == max_iterations - 1:
-                history['masks'].append(mask.copy())
-                history['aerial_images'].append(aerial_image)
-                history['printed_images'].append(printed_image)
-
+            # 进度输出
             if iteration % 10 == 0:
-                print(f"Iter {iteration:3d}: EPE={epe_loss_val:.4f}, PE={pe_loss_val:.4f}, "
-                      f"Conflict={conflict_degree:.3f}, Update={update_ratio:.1f}%, Grad={np.linalg.norm(masked_gradient):.4f}")
+                active_pixels = np.sum(np.abs(edge_constrained_gradient) > 1e-6)
+                update_ratio_current = active_pixels / edge_constrained_gradient.size * 100
+
+                print(f"Iter {iteration:3d}: "
+                      f"PE={pe_loss:.0f}, EPE={epe_loss:.0f}, "
+                      f"Total={combined_loss:.0f}, "
+                      f"Update={update_ratio_current:.1f}%")
 
         if csv_logger:
             csv_logger.close()
 
         total_time = time.time() - start_time
-        avg_update_ratio = np.mean(history['update_region_size'])
-        print(f"Edge-Constrained ConFIG Optimization completed in {total_time:.2f}s.")
-        print(f"Best EPE: {best_epe_loss:.4f}")
-        print(f"Average update region: {avg_update_ratio:.1f}% of total pixels")
 
-        return best_mask, history, self.update_mask_vis
+        print(f"\n{'=' * 60}")
+        print("BASE-EDGE-CONFIG OPTIMIZATION COMPLETED")
+        print(f"{'=' * 60}")
+        print(f"Total time: {total_time:.2f}s")
+        print(f"Best combined loss: {best_combined_loss:.2f}")
+        print(f"PE: {history['pe_loss'][0]:.1f} -> {history['pe_loss'][-1]:.1f}")
+        print(f"EPE: {history['epe_loss'][0]:.1f} -> {history['epe_loss'][-1]:.1f}")
+        print(f"{'=' * 60}")
+
+        return best_mask, history, self.edge_mask
 
 
-# --- 对外暴露的优化函数 ---
-def inverse_lithography_optimization_edge_constrained(initial_mask, target_image,
-                                                      learning_rate=0.01,
+class MomentumEdgeConFIGOptimizer(BaseEdgeConFIGOptimizer):
+    """
+    动量边缘约束ConFIG优化器
+    继承基础版本，添加方向动量
+    """
+
+    def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA,
+                 lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
+                 edge_pixel_range=5, momentum_beta=0.95):
+        super().__init__(lambda_, na, sigma, lx, ly, k_svd, a, tr, edge_pixel_range)
+
+        # 动量参数
+        self.momentum_beta = momentum_beta
+        self.direction_history = []
+
+        logger.info(f"MomentumEdgeConFIGOptimizer initialized (edge={edge_pixel_range}, beta={momentum_beta})")
+
+    def _apply_direction_momentum(self, gradient):
+        """
+        应用方向动量（只调整方向，不改变幅度）
+        """
+        if len(self.direction_history) == 0:
+            self.direction_history.append(gradient)
+            return gradient
+
+        # 计算当前方向
+        gradient_norm = np.linalg.norm(gradient)
+        if gradient_norm < 1e-10:
+            return gradient
+
+        current_direction = gradient / gradient_norm
+
+        # 计算历史平均方向
+        avg_direction = np.mean(self.direction_history[-5:], axis=0) if len(self.direction_history) >= 5 else \
+        self.direction_history[-1]
+        avg_direction_norm = np.linalg.norm(avg_direction)
+        if avg_direction_norm > 0:
+            avg_direction = avg_direction / avg_direction_norm
+
+        # 动量混合
+        mixed_direction = (
+                (1 - self.momentum_beta) * current_direction +
+                self.momentum_beta * avg_direction
+        )
+        mixed_direction_norm = np.linalg.norm(mixed_direction)
+        if mixed_direction_norm > 0:
+            mixed_direction = mixed_direction / mixed_direction_norm
+
+        # 保持原始梯度幅度
+        final_gradient = mixed_direction * gradient_norm
+
+        # 更新历史
+        self.direction_history.append(current_direction)
+        if len(self.direction_history) > 10:
+            self.direction_history.pop(0)
+
+        return final_gradient
+
+    def optimize(self, initial_mask, target, learning_rate=0.01,
+                 max_iterations=ILT_MAX_ITERATIONS,
+                 log_csv=True, log_dir="logs", experiment_tag=""):
+
+        mask = initial_mask.copy()
+
+        # 初始化边缘掩膜
+        self.edge_mask = self._detect_edge_region(target)
+        update_ratio = np.sum(self.edge_mask > 0.1) / self.edge_mask.size * 100
+        print(f"Edge region: {update_ratio:.1f}% of total area")
+
+        # 初始化
+        best_mask = mask.copy()
+        best_combined_loss = float('inf')
+        self.direction_history = []
+
+        # 日志
+        csv_logger = None
+        if log_csv:
+            csv_logger = OptimizationLogger(log_dir=log_dir)
+            init_pe, init_epe, _, _, _, _ = self._compute_gradients(mask, target)
+            csv_logger.start_logging(
+                optimizer_type="Momentum-Edge-ConFIG",
+                loss_type="PE+EPE (Fixed Weights + Momentum)",
+                learning_rate=learning_rate,
+                initial_loss=init_pe + init_epe,
+                target_shape=f"{target.shape}",
+                config_params={
+                    "edge_pixel_range": self.edge_pixel_range,
+                    "pe_weight": self.pe_weight,
+                    "epe_weight": self.epe_weight,
+                    "momentum_beta": self.momentum_beta
+                }
+            )
+
+        history = {
+            'pe_loss': [], 'epe_loss': [], 'combined_loss': [],
+            'grad_norms': []
+        }
+
+        start_time = time.time()
+
+        print(f"Starting Momentum-Edge-ConFIG Optimization ({max_iterations} iterations)")
+        print(f"Configuration: edge_range={self.edge_pixel_range}, momentum_beta={self.momentum_beta}")
+
+        for iteration in range(max_iterations):
+            # 计算梯度
+            pe_loss, epe_loss, grad_pe, grad_epe, aerial, printed = \
+                self._compute_gradients(mask, target)
+
+            # 固定权重融合梯度
+            combined_gradient = self.pe_weight * grad_pe + self.epe_weight * grad_epe
+
+            # 应用方向动量
+            momentum_gradient = self._apply_direction_momentum(combined_gradient)
+
+            # 应用边缘约束
+            edge_constrained_gradient = self._apply_edge_constraint(momentum_gradient, self.edge_mask)
+
+            # 计算组合损失
+            combined_loss = pe_loss * self.pe_weight + epe_loss * self.epe_weight
+
+            # 记录历史
+            history['pe_loss'].append(pe_loss)
+            history['epe_loss'].append(epe_loss)
+            history['combined_loss'].append(combined_loss)
+            history['grad_norms'].append(np.linalg.norm(edge_constrained_gradient))
+
+            # 保存最佳结果
+            if combined_loss < best_combined_loss:
+                best_combined_loss = combined_loss
+                best_mask = mask.copy()
+
+            # 日志记录
+            if csv_logger:
+                csv_logger.log_iteration(
+                    iteration=iteration,
+                    loss=combined_loss,
+                    gradient=edge_constrained_gradient,
+                    mask=mask,
+                    optimizer_state={
+                        "pe_weight": self.pe_weight,
+                        "epe_weight": self.epe_weight,
+                        "momentum_beta": self.momentum_beta
+                    },
+                    time_elapsed=time.time() - start_time
+                )
+
+            # 更新掩膜
+            mask = mask - learning_rate * edge_constrained_gradient
+            mask = np.clip(mask, 0, 1)
+
+            # 进度输出
+            if iteration % 10 == 0:
+                active_pixels = np.sum(np.abs(edge_constrained_gradient) > 1e-6)
+                update_ratio_current = active_pixels / edge_constrained_gradient.size * 100
+
+                print(f"Iter {iteration:3d}: "
+                      f"PE={pe_loss:.0f}, EPE={epe_loss:.0f}, "
+                      f"Total={combined_loss:.0f}, "
+                      f"Update={update_ratio_current:.1f}%")
+
+        if csv_logger:
+            csv_logger.close()
+
+        total_time = time.time() - start_time
+
+        print(f"\n{'=' * 60}")
+        print("MOMENTUM-EDGE-CONFIG OPTIMIZATION COMPLETED")
+        print(f"{'=' * 60}")
+        print(f"Total time: {total_time:.2f}s")
+        print(f"Best combined loss: {best_combined_loss:.2f}")
+        print(f"PE: {history['pe_loss'][0]:.1f} -> {history['pe_loss'][-1]:.1f}")
+        print(f"EPE: {history['epe_loss'][0]:.1f} -> {history['epe_loss'][-1]:.1f}")
+        print(f"{'=' * 60}")
+
+        return best_mask, history, self.edge_mask
+
+
+# 入口函数
+def inverse_lithography_optimization_base_edge_config(initial_mask, target_image,
+                                                      learning_rate=0.1,
                                                       max_iterations=ILT_MAX_ITERATIONS,
-                                                      use_momentum=False,
-                                                      beta_1=0.9,
-                                                      beta_2=0.999,
-                                                      edge_pixel_range=10,
+                                                      edge_pixel_range=5,
                                                       **config_params):
     """
-    边缘约束的ConFIG逆光刻优化入口函数
+    基础边缘约束ConFIG优化入口函数
     """
-    optimizer = EdgeConstrainedConFIGOptimizer(
-        use_momentum=use_momentum,
-        beta_1=beta_1,
-        beta_2=beta_2,
+    optimizer = BaseEdgeConFIGOptimizer(
         edge_pixel_range=edge_pixel_range
     )
 
-    optimized_mask, history, update_mask = optimizer.optimize(
+    optimized_mask, history, edge_mask = optimizer.optimize(
         initial_mask=initial_mask,
         target=target_image,
         learning_rate=learning_rate,
@@ -588,4 +521,28 @@ def inverse_lithography_optimization_edge_constrained(initial_mask, target_image
         **config_params
     )
 
-    return optimized_mask, history, update_mask
+    return optimized_mask, history, edge_mask
+
+
+def inverse_lithography_optimization_momentum_edge_config(initial_mask, target_image,
+                                                          learning_rate=0.1,
+                                                          max_iterations=ILT_MAX_ITERATIONS,
+                                                          edge_pixel_range=5,
+                                                          **config_params):
+    """
+    动量边缘约束ConFIG优化入口函数
+    """
+    optimizer = MomentumEdgeConFIGOptimizer(
+        edge_pixel_range=edge_pixel_range,
+        momentum_beta=0.85
+    )
+
+    optimized_mask, history, edge_mask = optimizer.optimize(
+        initial_mask=initial_mask,
+        target=target_image,
+        learning_rate=learning_rate,
+        max_iterations=max_iterations,
+        **config_params
+    )
+
+    return optimized_mask, history, edge_mask
