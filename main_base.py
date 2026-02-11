@@ -5,7 +5,7 @@ from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.evaluation_function import pe_loss, epe_loss
 from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization, \
-    plot_soco_visualization, plot_soco_simplified
+    plot_tcc_structure
 
 # 导入边缘约束优化器
 from core.inverse_lithography_base import EdgeConstrainedInverseLithographyOptimizer
@@ -148,34 +148,16 @@ def main():
         save_path=edge_vis_path
     )
 
-    # 10. SOCO可视化
-    print(f"\nGenerating SOCO visualization...")
-    soco_vis_path = FITNESS_PLOT_PATH.replace('.png', '_soco.png')
-
-    # 获取优化器的特征值和特征函数
-    singular_values = optimizer.singular_values
-    eigen_functions = optimizer.eigen_functions
-
-    # 使用最终掩膜进行SOCO可视化
-    plot_soco_visualization(
-        mask=final_mask,
-        eigen_functions=eigen_functions,
-        singular_values=singular_values,
-        save_path=soco_vis_path
-    )
-
-    # 也可以生成简化版
-    soco_simple_path = FITNESS_PLOT_PATH.replace('.png', '_soco_simple.png')
-    plot_soco_simplified(
-        mask=final_mask,
-        eigen_functions=eigen_functions,
-        singular_values=singular_values,
-        save_path=soco_simple_path
-    )
-
-    print(f"SOCO visualizations saved:")
-    print(f"  - Detailed: {soco_vis_path}")
-    print(f"  - Simplified: {soco_simple_path}")
+    # TCC 矩阵可视化 (新增)
+    tcc_vis_path = FITNESS_PLOT_PATH.replace('.png', '_tcc_matrix.png')
+    print(f"Saving TCC matrix visualization to {tcc_vis_path}...")
+    if optimizer.tcc_matrix is not None:
+        plot_tcc_structure(
+            optimizer.tcc_matrix,
+            save_path=tcc_vis_path
+        )
+    else:
+        print("TCC Matrix not available for visualization.")
 
     print("\nEdge-constrained PE optimization completed successfully!")
 
