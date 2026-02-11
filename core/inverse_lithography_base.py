@@ -9,6 +9,10 @@ from scipy.sparse import lil_matrix, csr_matrix
 from config.parameters import *
 from utils.optimization_logger import OptimizationLogger
 
+# Import visualization specifically inside method or use lazy import to avoid circular dependency
+# if strictly needed at top level:
+# from utils.visualization import plot_tcc_visualization
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,6 +101,29 @@ class EdgeConstrainedInverseLithographyOptimizer:
         fy = np.linspace(-freq, freq, self.ly)
         TCC_4d = self._compute_full_tcc_matrix(fx, fy)
         self.singular_values, self.eigen_functions = self._svd_of_tcc_matrix(TCC_4d, self.k_svd)
+
+    def visualize_system_tcc(self, save_path):
+        """
+        Calculates and Visualizes the TCC matrix.
+        """
+        from utils.visualization import plot_tcc_visualization
+
+        print("\n--- Visualizing TCC System ---")
+        print("Recomputing TCC matrix for visualization (this may take a moment)...")
+
+        # Regenerate frequency grids
+        max_freq = self.na / self.lambda_
+        freq = 2 * max_freq
+        fx = np.linspace(-freq, freq, self.lx)
+        fy = np.linspace(-freq, freq, self.ly)
+
+        # Calculate full matrix
+        tcc_matrix = self._compute_full_tcc_matrix(fx, fy)
+
+        # Call the visualization function
+        print(f"Plotting TCC visualization to {save_path}...")
+        plot_tcc_visualization(tcc_matrix, self.lx, self.ly, save_path=save_path)
+        print("TCC visualization completed.")
 
     def photoresist_model(self, intensity):
         return 1 / (1 + np.exp(-self.a * (intensity - self.tr)))
