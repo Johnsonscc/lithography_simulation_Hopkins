@@ -1,13 +1,18 @@
 import time
 import os
+import numpy as np
+
 from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.lithography_simulation import hopkins_digital_lithography_simulation, photoresist_model
 from core.evaluation_function import pe_loss, epe_loss
-from utils.visualization import plot_comparison,plot_dual_axis_loss_history
+from utils.visualization import plot_comparison, plot_dual_axis_loss_history
 
-# 导入新的 Comb 优化器
-from core.inverse_lithography_comb import inverse_lithography_optimization_comb
+# 导入优化器（无边缘约束）
+from core.inverse_lithography_comb import (
+    inverse_lithography_optimization_momentum_config
+)
+
 
 def main():
     start_time = time.time()
@@ -27,34 +32,23 @@ def main():
     pe_init = pe_loss(target_image, resist_init)
     epe_init = epe_loss(target_image, resist_init)
 
+    # 3. 选择优化类型
+    OPTIMIZATION_TYPE = "config_momentum"
 
-    # Single Stage: Combined Optimization (Comb)
-    print("\n" + "=" * 60)
-    print(">>> Starting Single Stage: Combined (PE+EPE) Optimization")
-    print("=" * 60)
+    print(">>> Starting Momentum ConFIG Inverse Lithography Optimization (No Edge Constraint)")
+    print("-" * 70)
 
-    # 建议配置：
-    # 如果是黑底白字，建议使用 Momentum，comb_weight=0.85 左右
-    # 如果是普通图形，Adam 或 Momentum 均可
-
-    final_mask, history = inverse_lithography_optimization_comb(
+    # 运行动量优化（无边缘约束）
+    final_mask, history = inverse_lithography_optimization_momentum_config(
         initial_mask=initial_mask,
         target_image=target_image,
-
-        optimizer_type='momentum',  # 推荐：Momentum 比较稳健
-        learning_rate=0.01,  # 单阶段通常可以用适中的学习率
-        max_iterations=300,  # 一次性跑完
-
-        # --- 核心参数: Comb Weight ---
-        # 0.85 代表: 85% 的梯度方向由边缘(EPE)决定, 15% 由全局(PE)决定, 全局梯度能有效压制背景噪声
-        comb_weight=0,
-
+        learning_rate=0.1,
+        max_iterations=100,
         log_csv=True,
-        experiment_tag=f"{experiment_tag}_comb",
-        log_dir="logs"
+        experiment_tag=f"{experiment_tag}_momentum_config"
     )
 
-    # 3. 最终结果评估
+    # 4. 最终结果评估
     print("\nRunning final evaluation...")
     aerial_best = hopkins_digital_lithography_simulation(final_mask)
     resist_best = photoresist_model(aerial_best)
@@ -63,19 +57,24 @@ def main():
 
     end_time = time.time()
 
-    # 4. 输出统计
-    print("-" * 50)
+    # 5. 输出统计
+    print("\n" + "=" * 70)
+    print(f"{OPTIMIZATION_TYPE.upper()} OPTIMIZATION RESULTS")
+    print("=" * 70)
+    print(f"Optimization Type: {OPTIMIZATION_TYPE}")
     print(f"Total Process Time: {end_time - start_time:.2f}s")
-    print(f"PE Improvement:     {pe_init:.2f} -> {pe_final:.2f}")
-    print(f"EPE Improvement:   {epe_init:.4f} -> {epe_final:.4f}")
-    print("-" * 50)
+    print(f"PE  Loss: {pe_init:.2f} -> {pe_final:.2f} (Improvement: {pe_init - pe_final:.2f})")
+    print(f"EPE Loss: {epe_init:.4f} -> {epe_final:.4f} (Improvement: {epe_init - epe_final:.4f})")
+    print("=" * 70)
 
-    # 5. 保存结果
+    # 6. 保存结果
+    print(f"\nSaving optimized mask to {OUTPUT_MASK_PATH}...")
     save_image(final_mask, OUTPUT_MASK_PATH)
 
-    # 6. 可视化
-    # 绘制 EPE 和 PE 的变化曲线
+    # 7. 可视化
+    print(f"\nGenerating visualizations...")
 
+    # 标准对比图
     print(f"Saving comparison plot to {RESULTS_IMAGE_PATH}...")
     plot_comparison(
         target_image, aerial_init, resist_init,
@@ -84,8 +83,11 @@ def main():
         save_path=RESULTS_IMAGE_PATH
     )
 
+    # 损失历史图
     print(f"Saving loss history plot to {FITNESS_PLOT_PATH}...")
     plot_dual_axis_loss_history(history, save_path=FITNESS_PLOT_PATH)
+
+    print("\nOptimization completed successfully!")
 
 
 if __name__ == "__main__":

@@ -81,7 +81,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
         k_actual = min(k, min(TCC_csr.shape) - 1)
         print(f"TCC SVD precomputation completed with {k_actual} singular values")
 
-        U, S, Vh = svds(TCC_csr, k=k_actual)
+        U, S, Vh = svds(TCC_csr, k=k_actual,random_state=42)
         significant_mask = S > (np.max(S) * 0.01)
         S, U = S[significant_mask], U[:, significant_mask]
         idx = np.argsort(S)[::-1]

@@ -1,6 +1,8 @@
 import time
 import logging
 import numpy as np
+import torch
+import cv2
 from config.parameters import *
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from scipy.sparse.linalg import svds
@@ -11,16 +13,14 @@ from utils.optimization_logger import OptimizationLogger
 logger = logging.getLogger(__name__)
 
 
-class CombInverseLithographyOptimizer:
+class BaseConFIGOptimizer:
     """
-    联合优化器 (Combined Optimizer)：
-    在一个阶段内同时优化 EPE (边缘精度) 和 PE (像素保真度)。
-    通过 comb_weight 参数控制两者的权重平衡。
+    基础ConFIG优化器（无边缘约束）
+    使用固定权重融合PE和EPE梯度
     """
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA,
-                 lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
-                 optimizer_type=OPTIMIZER_TYPE):
+                 lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR):
         # 光学参数
         self.lambda_ = lambda_
         self.na = na
@@ -28,23 +28,20 @@ class CombInverseLithographyOptimizer:
         self.lx = lx
         self.ly = ly
         self.k_svd = k_svd
-
-        # 光刻胶参数
         self.a = a
         self.tr = tr
 
-        # 优化器配置
-        self.optimizer_type = optimizer_type
-        self.optimizer_state = {}
+        # 固定权重参数（PE为主，EPE权重为0）
+        self.pe_weight = 0
+        self.epe_weight = 1
 
-        # 预计算TCC SVD分解
+        # 预计算
         self.singular_values = None
         self.eigen_functions = None
         self._precompute_tcc_svd()
 
-        logger.info(f"CombInverseLithographyOptimizer initialized with {optimizer_type}")
+        logger.info(f"BaseConFIGOptimizer initialized")
 
-    # --- 光学模型函数 ---
     def pupil_response_function(self, fx, fy):
         r = np.sqrt(fx ** 2 + fy ** 2)
         r_max = self.na / self.lambda_
@@ -54,23 +51,19 @@ class CombInverseLithographyOptimizer:
     def light_source_function(self, fx, fy):
         r = np.sqrt(fx ** 2 + fy ** 2)
         r_max = self.sigma * self.na / self.lambda_
-        J = np.where(r <= r_max,
-                     self.lambda_ ** 2 / (np.pi * (self.sigma * self.na) ** 2), 0.0)
+        J = np.where(r <= r_max, self.lambda_ ** 2 / (np.pi * (self.sigma * self.na) ** 2), 0.0)
         return J
 
-    # --- TCC SVD 预计算 (Comb 版本) ---
-    def _compute_full_tcc_matrix_comb(self, fx, fy, sparsity_threshold=0.001):
-        """构建 Comb TCC 矩阵"""
+    def _compute_full_tcc_matrix(self, fx, fy, sparsity_threshold=0.001):
         Lx, Ly = len(fx), len(fy)
         FX, FY = np.meshgrid(fx, fy, indexing='xy')
         J = self.light_source_function(FX, FY)
         P = self.pupil_response_function(FX, FY)
         tcc_kernel = J * P
+
         TCC_sparse = lil_matrix((Lx * Ly, Lx * Ly), dtype=np.complex128)
         neighborhood_radius = 10
-
-        # 修改描述为 Comb TCC
-        for i in tqdm(range(Lx), desc="Comb TCC Construction"):
+        for i in tqdm(range(Lx), desc="Base TCC Construction"):
             for j in range(Ly):
                 if np.abs(tcc_kernel[i, j]) > sparsity_threshold:
                     for m in range(max(0, i - neighborhood_radius), min(Lx, i + neighborhood_radius + 1)):
@@ -79,115 +72,38 @@ class CombInverseLithographyOptimizer:
                                 idx1 = i * Ly + j
                                 idx2 = m * Ly + n
                                 TCC_sparse[idx1, idx2] = tcc_kernel[i, j] * np.conj(tcc_kernel[m, n])
+        return csr_matrix(TCC_sparse)
 
-        TCC_csr = csr_matrix(TCC_sparse)
-        return TCC_csr
-
-    def _svd_of_tcc_matrix(self, TCC_csr, k, Lx, Ly):
+    def _svd_of_tcc_matrix(self, TCC_csr, k, Lx=LX, Ly=LY):
         k_actual = min(k, min(TCC_csr.shape) - 1)
-        U, S, Vh = svds(TCC_csr, k=k_actual)
+        print(f"TCC SVD precomputation completed with {k_actual} singular values")
+
+        U, S, Vh = svds(TCC_csr, k=k_actual, random_state=42)
         significant_mask = S > (np.max(S) * 0.01)
-        S = S[significant_mask]
-        U = U[:, significant_mask]
+        S, U = S[significant_mask], U[:, significant_mask]
         idx = np.argsort(S)[::-1]
-        S = S[idx]
-        U = U[:, idx]
+        S, U = S[idx], U[:, idx]
+
         H_functions = [U[:, i].reshape(Lx, Ly) for i in range(len(S))]
         return S, H_functions
 
     def _precompute_tcc_svd(self):
+        """TCC SVD预计算"""
         max_freq = self.na / self.lambda_
         freq = 2 * max_freq
         fx = np.linspace(-freq, freq, self.lx)
         fy = np.linspace(-freq, freq, self.ly)
-        # 调用 Comb 版本的 TCC 构建
-        TCC_4d = self._compute_full_tcc_matrix_comb(fx, fy)
-        self.singular_values, self.eigen_functions = self._svd_of_tcc_matrix(TCC_4d, self.k_svd, self.lx, self.ly)
-        print(f"Comb TCC SVD precomputation completed with {len(self.singular_values)} singular values")
+        TCC_4d = self._compute_full_tcc_matrix(fx, fy)
+        self.singular_values, self.eigen_functions = self._svd_of_tcc_matrix(TCC_4d, self.k_svd)
 
     def photoresist_model(self, intensity):
         return 1 / (1 + np.exp(-self.a * (intensity - self.tr)))
 
-    # --- 优化器状态管理 ---
-    def _initialize_optimizer_state(self, mask_shape):
-        if self.optimizer_type == 'sgd':
-            self.optimizer_state = {}
-        elif self.optimizer_type == 'momentum':
-            self.optimizer_state = {'velocity': np.zeros(mask_shape, dtype=np.float64)}
-        elif self.optimizer_type == 'rmsprop':
-            self.optimizer_state = {'square_avg': np.zeros(mask_shape, dtype=np.float64)}
-        elif self.optimizer_type == 'cg':
-            self.optimizer_state = {'prev_grad': None, 'direction': None, 't': 0}
-        elif self.optimizer_type == 'adam':
-            self.optimizer_state = {'m': np.zeros(mask_shape, dtype=np.float64),
-                                    'v': np.zeros(mask_shape, dtype=np.float64),
-                                    't': 0}
-
-    # --- 优化器更新逻辑 ---
-    def _update_with_optimizer(self, mask, gradient, learning_rate, **optimizer_params):
-        if self.optimizer_type == 'sgd':
-            new_mask = mask - learning_rate * gradient
-        elif self.optimizer_type == 'momentum':
-            momentum = optimizer_params.get('momentum', 0.9)
-            velocity = self.optimizer_state['velocity']
-            velocity = momentum * velocity - learning_rate * gradient
-            self.optimizer_state['velocity'] = velocity
-            new_mask = mask + velocity
-        elif self.optimizer_type == 'rmsprop':
-            decay_rate = optimizer_params.get('decay_rate', 0.99)
-            epsilon = optimizer_params.get('epsilon', 1e-8)
-            square_avg = self.optimizer_state['square_avg']
-            square_avg = decay_rate * square_avg + (1 - decay_rate) * (gradient ** 2)
-            self.optimizer_state['square_avg'] = square_avg
-            new_mask = mask - learning_rate * gradient / (np.sqrt(square_avg) + epsilon)
-        elif self.optimizer_type == 'cg':
-            grad_curr = gradient
-            t = self.optimizer_state['t']
-            if t == 0:
-                direction = -grad_curr
-            else:
-                grad_prev = self.optimizer_state['prev_grad']
-                direction_prev = self.optimizer_state['direction']
-                y_k = grad_curr - grad_prev
-                numerator = np.sum(grad_curr * y_k)
-                denominator = np.sum(grad_prev ** 2)
-                beta = numerator / (denominator + 1e-10)
-                beta = max(0, beta)
-                direction = -grad_curr + beta * direction_prev
-            self.optimizer_state['prev_grad'] = grad_curr
-            self.optimizer_state['direction'] = direction
-            self.optimizer_state['t'] = t + 1
-            new_mask = mask + learning_rate * direction
-        elif self.optimizer_type == 'adam':
-            beta1 = optimizer_params.get('beta1', 0.9)
-            beta2 = optimizer_params.get('beta2', 0.999)
-            epsilon = optimizer_params.get('epsilon', 1e-8)
-            adam_lambda = optimizer_params.get('lambda', 1 - 1e-8)
-            m = self.optimizer_state['m']
-            v = self.optimizer_state['v']
-            t = self.optimizer_state['t'] + 1
-            beta1_t = beta1 * (adam_lambda ** (t - 1))
-            m = beta1_t * m + (1 - beta1) * gradient
-            v = beta2 * v + (1 - beta2) * (gradient ** 2)
-            m_hat = m / (1 - beta1 ** t)
-            v_hat = v / (1 - beta2 ** t)
-            new_mask = mask - learning_rate * m_hat / (np.sqrt(v_hat) + epsilon)
-            self.optimizer_state['m'] = m
-            self.optimizer_state['v'] = v
-            self.optimizer_state['t'] = t
-        else:
-            raise ValueError(f"Unknown optimizer: {self.optimizer_type}")
-
-        return np.clip(new_mask, 0, 1)
-
-    # --- 核心：联合梯度计算 ---
-    def _compute_comb_gradient(self, mask, target, comb_weight=0.85, epsilon=1e-10):
+    def _compute_gradients(self, mask, target):
         """
-        计算联合梯度 (Combined Gradient)
-        comb_weight: 控制 EPE (边缘) 和 PE (全局) 的权重比例。
-                    comb_weight 越大，越重视边缘对齐。
+        梯度计算
         """
-        # 1. 前向传播
+        # 前向传播
         M_fft = fftshift(fft2(mask))
         A_i_list = []
         intensity = np.zeros((self.lx, self.ly), dtype=np.float64)
@@ -198,184 +114,347 @@ class CombInverseLithographyOptimizer:
             intensity += s_val * (np.abs(A_i) ** 2)
             A_i_list.append(A_i)
 
-        # 归一化光强
+        # 归一化
         intensity_min = np.min(intensity)
         intensity_max = np.max(intensity)
-        denom = intensity_max - intensity_min if (intensity_max - intensity_min) > epsilon else 1.0
-        intensity_norm = (intensity - intensity_min) / denom
+        intensity_range = intensity_max - intensity_min
 
-        # 光刻胶显影 P
-        P = self.photoresist_model(intensity_norm)
+        if intensity_range < 1e-10:
+            intensity_norm = np.zeros_like(intensity)
+        else:
+            intensity_norm = (intensity - intensity_min) / intensity_range
+            intensity_norm = np.clip(intensity_norm, -10, 10)
 
-        # 2. 计算各个损失 (仅用于日志记录)
+        # 光刻胶显影
+        exponent = -self.a * (intensity_norm - self.tr)
+        exponent = np.clip(exponent, -100, 100)
+        P = 1 / (1 + np.exp(exponent))
+
+        # 计算PE损失
         pe_loss = np.sum((P - target) ** 2)
 
-        # 计算边缘权重 W (用于 EPE)
-        grad_y, grad_x = np.gradient(P)
-        W = np.sqrt(grad_x ** 2 + grad_y ** 2 + epsilon)
-        if np.max(W) > 0:
-            W = W / np.max(W)
+        # EPE损失（仍计算，但权重为0）
+        # 为保持梯度计算结构，仍用全1加权（即等效于PE）
+        epe_loss = np.sum((P - target) ** 2)  # 等同于PE
 
-        epe_loss = np.sum(((P - target) ** 2) * W)
+        # 计算PE梯度
+        dP_dI = self.a * P * (1 - P)
+        dJ_pe_dP = 2 * (P - target)
+        dJ_pe_dI = dJ_pe_dP * dP_dI / intensity_range if intensity_range > 1e-10 else dJ_pe_dP * dP_dI
 
-        # 3. 计算联合梯度权重 (Comb Weight Matrix)
-        # 混合逻辑：Comb_Weight = comb_weight * W (边缘) + (1 - comb_weight) * 1 (全局)
-        # 这样在边缘处梯度被加强，在背景处梯度被保留但较小 (防止形状崩坏)
-        combined_weight_matrix = comb_weight * W + (1.0 - comb_weight)
-
-        # dJ_comb / dP
-        dJ_dP = 2 * (P - target) * combined_weight_matrix
-
-        # 4. 链式法则反向传播
-        dP_dI_norm = self.a * P * (1 - P)
-        dI_norm_dI = 1.0 / denom
-        dP_dI = dP_dI_norm * dI_norm_dI
-
-        # dJ_comb / dI
-        dJ_dI = dJ_dP * dP_dI
-
-        gradient = np.zeros_like(mask, dtype=np.complex128)
-
+        grad_pe = np.zeros_like(mask, dtype=np.complex128)
         for i, (s_val, H_i, A_i) in enumerate(zip(
                 self.singular_values, self.eigen_functions, A_i_list)):
             dI_dA_i = 2 * s_val * A_i.conj()
-            dJ_dA_i = dJ_dI * dI_dA_i
-
+            dJ_dA_i = dJ_pe_dI * dI_dA_i
             dJ_dA_i_fft = fftshift(fft2(dJ_dA_i))
-            gradient += ifft2(ifftshift(dJ_dA_i_fft * np.conj(H_i)))
+            grad_pe += ifft2(ifftshift(dJ_dA_i_fft * np.conj(H_i)))
 
-        return epe_loss, pe_loss, np.real(gradient), intensity_norm, P
+        # 计算EPE梯度（同样处理）
+        dJ_epe_dP = 2 * (P - target)  # 全图加权
+        dJ_epe_dI = dJ_epe_dP * dP_dI / intensity_range if intensity_range > 1e-10 else dJ_epe_dP * dP_dI
 
-    # --- 优化主循环 ---
-    def optimize_comb(self, initial_mask, target, learning_rate=None,
-                      max_iterations=ILT_MAX_ITERATIONS,
-                      comb_weight=0.85,  # 默认联合权重
-                      log_csv=True,
-                      log_dir="logs",
-                      experiment_tag="",
-                      **optimizer_params):
+        grad_epe = np.zeros_like(mask, dtype=np.complex128)
+        for i, (s_val, H_i, A_i) in enumerate(zip(
+                self.singular_values, self.eigen_functions, A_i_list)):
+            dI_dA_i = 2 * s_val * A_i.conj()
+            dJ_dA_i = dJ_epe_dI * dI_dA_i
+            dJ_dA_i_fft = fftshift(fft2(dJ_dA_i))
+            grad_epe += ifft2(ifftshift(dJ_dA_i_fft * np.conj(H_i)))
+
+        return (pe_loss, epe_loss,
+                np.real(grad_pe), np.real(grad_epe),
+                intensity_norm, P)
+
+    def optimize(self, initial_mask, target, learning_rate=0.1,
+                 max_iterations=ILT_MAX_ITERATIONS,
+                 log_csv=True, log_dir="logs", experiment_tag=""):
 
         mask = initial_mask.copy()
 
-        # 默认学习率
-        if learning_rate is None:
-            learning_rate = ILT_OPTIMIZER_CONFIGS[self.optimizer_type]['learning_rate']
+        # 初始化（无边缘掩膜）
+        best_mask = mask.copy()
+        best_combined_loss = float('inf')
 
-        default_params = ILT_OPTIMIZER_CONFIGS[self.optimizer_type]['params'].copy()
-        default_params.update(optimizer_params)
-        optimizer_params = default_params
-
-        # 初始化 CSV 日志
+        # 日志
         csv_logger = None
         if log_csv:
-            target_shape = f"{target.shape[0]}x{target.shape[1]}"
-            if experiment_tag:
-                target_shape = f"{target_shape}_{experiment_tag}"
-
-            # 计算初始梯度信息
-            init_epe, init_pe, _, _, _ = self._compute_comb_gradient(
-                initial_mask, target, comb_weight=comb_weight
-            )
-
             csv_logger = OptimizationLogger(log_dir=log_dir)
+            init_pe, init_epe, _, _, _, _ = self._compute_gradients(mask, target)
             csv_logger.start_logging(
-                optimizer_type=self.optimizer_type,
-                loss_type=f"Comb(w={comb_weight})",
+                optimizer_type="Base-ConFIG",
+                loss_type="PE+EPE (Fixed Weights)",
                 learning_rate=learning_rate,
-                initial_loss=init_epe,  # 这里记录 EPE 作为主要参考
-                target_shape=target_shape,
-                config_params=optimizer_params
+                initial_loss=init_pe + init_epe,
+                target_shape=f"{target.shape}",
+                config_params={
+                    "pe_weight": self.pe_weight,
+                    "epe_weight": self.epe_weight
+                }
             )
-
-        self._initialize_optimizer_state(mask.shape)
 
         history = {
-            'pe_loss': [],
-            'epe_loss': [],
-            'loss': [],
-            'grad_norms': [],
-            'masks': [],
-            'aerial_images': [],
-            'printed_images': [],
-            'learning_rates': [],
-            'csv_log_path': csv_logger.filepath if csv_logger else None
+            'pe_loss': [], 'epe_loss': [], 'combined_loss': [],
+            'grad_norms': []
         }
-
-        print(f"Starting Comb Optimization ({max_iterations} iters)...")
-        print(f"Config: Comb Weight = {comb_weight} (High=EPE focus, Low=PE focus)")
-
-        best_mask = mask.copy()
-        best_epe_loss = float('inf')  # 依然以 EPE 为最终优劣标准
 
         start_time = time.time()
 
+        print(f"Starting Base-ConFIG Optimization ({max_iterations} iterations)")
+
         for iteration in range(max_iterations):
-            # 调用 Comb 梯度计算
-            epe_loss, pe_loss, gradient, aerial_image, printed_image = \
-                self._compute_comb_gradient(mask, target, comb_weight=comb_weight)
+            # 计算梯度
+            pe_loss, epe_loss, grad_pe, grad_epe, aerial, printed = \
+                self._compute_gradients(mask, target)
+
+            # 固定权重融合梯度（无边缘约束）
+            combined_gradient = self.pe_weight * grad_pe + self.epe_weight * grad_epe
+
+            # 计算组合损失
+            combined_loss = pe_loss * self.pe_weight + epe_loss * self.epe_weight
 
             # 记录历史
-            history['epe_loss'].append(epe_loss)
             history['pe_loss'].append(pe_loss)
-            history['loss'].append(epe_loss)  # 默认 Loss 曲线画 EPE
+            history['epe_loss'].append(epe_loss)
+            history['combined_loss'].append(combined_loss)
+            history['grad_norms'].append(np.linalg.norm(combined_gradient))
 
-            # 记录最佳结果 (通常以 EPE 为准，因为它是精修指标)
-            if epe_loss < best_epe_loss:
-                best_epe_loss = epe_loss
+            # 保存最佳结果
+            if combined_loss < best_combined_loss:
+                best_combined_loss = combined_loss
                 best_mask = mask.copy()
 
+            # 日志记录
             if csv_logger:
                 csv_logger.log_iteration(
                     iteration=iteration,
-                    loss=epe_loss,
-                    gradient=gradient,
+                    loss=combined_loss,
+                    gradient=combined_gradient,
                     mask=mask,
-                    optimizer_state=self.optimizer_state,
+                    optimizer_state={
+                        "pe_weight": self.pe_weight,
+                        "epe_weight": self.epe_weight
+                    },
                     time_elapsed=time.time() - start_time
                 )
 
-            # 优化器更新
-            mask = self._update_with_optimizer(mask, gradient, learning_rate, **optimizer_params)
+            # 更新掩膜
+            mask = mask - learning_rate * combined_gradient
+            mask = np.clip(mask, 0, 1)
 
-            history['grad_norms'].append(np.linalg.norm(gradient))
-            history['learning_rates'].append(learning_rate)
-
-            if iteration % 20 == 0 or iteration == max_iterations - 1:
-                history['masks'].append(mask.copy())
-                history['aerial_images'].append(aerial_image)
-                history['printed_images'].append(printed_image)
-
+            # 进度输出
             if iteration % 10 == 0:
-                print(f"Iter {iteration}: EPE={epe_loss:.4f}, PE={pe_loss:.4f}, Grad={np.linalg.norm(gradient):.4f}")
+                print(f"Iter {iteration:3d}: "
+                      f"PE={pe_loss:.0f}, EPE={epe_loss:.0f}, "
+                      f"Total={combined_loss:.0f}")
 
         if csv_logger:
             csv_logger.close()
 
         total_time = time.time() - start_time
-        print(f"Comb Optimization completed in {total_time:.2f}s. Best EPE: {best_epe_loss:.4f}")
+
+        print(f"\n{'=' * 60}")
+        print("BASE-CONFIG OPTIMIZATION COMPLETED")
+        print(f"{'=' * 60}")
+        print(f"Total time: {total_time:.2f}s")
+        print(f"Best combined loss: {best_combined_loss:.2f}")
+        print(f"PE: {history['pe_loss'][0]:.1f} -> {history['pe_loss'][-1]:.1f}")
+        print(f"EPE: {history['epe_loss'][0]:.1f} -> {history['epe_loss'][-1]:.1f}")
+        print(f"{'=' * 60}")
 
         return best_mask, history
 
 
-# --- 对外暴露的 Comb 优化函数 ---
-def inverse_lithography_optimization_comb(initial_mask, target_image,
-                                          learning_rate=None,
-                                          max_iterations=ILT_MAX_ITERATIONS,
-                                          optimizer_type=OPTIMIZER_TYPE,
-                                          comb_weight=0.85,  # 核心参数
-                                          **optimizer_params):
+class MomentumConFIGOptimizer(BaseConFIGOptimizer):
     """
-    单一阶段联合优化入口函数
+    动量ConFIG优化器（带梯度归一化，无边缘约束）
+    继承基础版本，添加方向动量，并在加权前对 PE 和 EPE 梯度进行量级归一化
     """
-    optimizer = CombInverseLithographyOptimizer(optimizer_type=optimizer_type)
 
-    optimized_mask, history = optimizer.optimize_comb(
+    def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA,
+                 lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
+                 momentum_beta=0.95):
+        super().__init__(lambda_, na, sigma, lx, ly, k_svd, a, tr)
+
+        # 动量参数
+        self.momentum_beta = momentum_beta
+        self.direction_history = []
+
+        logger.info(f"MomentumConFIGOptimizer initialized (beta={momentum_beta})")
+
+    def _apply_direction_momentum(self, gradient):
+        """
+        应用方向动量（只调整方向，不改变幅度）
+        """
+        if len(self.direction_history) == 0:
+            self.direction_history.append(gradient)
+            return gradient
+
+        # 计算当前方向
+        gradient_norm = np.linalg.norm(gradient)
+        if gradient_norm < 1e-10:
+            return gradient
+
+        current_direction = gradient / gradient_norm
+
+        # 计算历史平均方向
+        avg_direction = np.mean(self.direction_history[-5:], axis=0) if len(self.direction_history) >= 5 else \
+        self.direction_history[-1]
+        avg_direction_norm = np.linalg.norm(avg_direction)
+        if avg_direction_norm > 0:
+            avg_direction = avg_direction / avg_direction_norm
+
+        # 动量混合
+        mixed_direction = (
+                (1 - self.momentum_beta) * current_direction +
+                self.momentum_beta * avg_direction
+        )
+        mixed_direction_norm = np.linalg.norm(mixed_direction)
+        if mixed_direction_norm > 0:
+            mixed_direction = mixed_direction / mixed_direction_norm
+
+        # 保持原始梯度幅度
+        final_gradient = mixed_direction * gradient_norm
+
+        # 更新历史
+        self.direction_history.append(current_direction)
+        if len(self.direction_history) > 10:
+            self.direction_history.pop(0)
+
+        return final_gradient
+
+    def optimize(self, initial_mask, target, learning_rate=0.01,
+                 max_iterations=ILT_MAX_ITERATIONS,
+                 log_csv=True, log_dir="logs", experiment_tag=""):
+
+        mask = initial_mask.copy()
+
+        # 初始化
+        best_mask = mask.copy()
+        best_combined_loss = float('inf')
+        self.direction_history = []
+
+        # 日志
+        csv_logger = None
+        if log_csv:
+            csv_logger = OptimizationLogger(log_dir=log_dir)
+            init_pe, init_epe, _, _, _, _ = self._compute_gradients(mask, target)
+            csv_logger.start_logging(
+                optimizer_type="Momentum-ConFIG",
+                loss_type="PE+EPE (Fixed Weights + Momentum + Gradient Norm)",
+                learning_rate=learning_rate,
+                initial_loss=init_pe + init_epe,
+                target_shape=f"{target.shape}",
+                config_params={
+                    "pe_weight": self.pe_weight,
+                    "epe_weight": self.epe_weight,
+                    "momentum_beta": self.momentum_beta
+                }
+            )
+
+        history = {
+            'pe_loss': [], 'epe_loss': [], 'combined_loss': [],
+            'grad_norms': []
+        }
+
+        start_time = time.time()
+
+        print(f"Starting Momentum-ConFIG Optimization ({max_iterations} iterations)")
+        print(f"Configuration: momentum_beta={self.momentum_beta}")
+
+        for iteration in range(max_iterations):
+            # 计算梯度
+            pe_loss, epe_loss, grad_pe, grad_epe, aerial, printed = \
+                self._compute_gradients(mask, target)
+
+            # 梯度归一化（使 grad_pe 与 grad_epe 量级一致）
+            grad_pe_norm = np.linalg.norm(grad_pe)
+            grad_epe_norm = np.linalg.norm(grad_epe)
+            eps = 1e-8
+            if grad_pe_norm > eps and grad_epe_norm > eps:
+                scale = grad_pe_norm / grad_epe_norm
+                grad_epe = grad_epe * scale
+
+            # 固定权重融合梯度
+            combined_gradient = self.pe_weight * grad_pe + self.epe_weight * grad_epe
+
+            # 应用方向动量
+            momentum_gradient = self._apply_direction_momentum(combined_gradient)
+
+            # 计算组合损失
+            combined_loss = pe_loss * self.pe_weight + epe_loss * self.epe_weight
+
+            # 记录历史
+            history['pe_loss'].append(pe_loss)
+            history['epe_loss'].append(epe_loss)
+            history['combined_loss'].append(combined_loss)
+            history['grad_norms'].append(np.linalg.norm(momentum_gradient))
+
+            # 保存最佳结果
+            if combined_loss < best_combined_loss:
+                best_combined_loss = combined_loss
+                best_mask = mask.copy()
+
+            # 日志记录
+            if csv_logger:
+                csv_logger.log_iteration(
+                    iteration=iteration,
+                    loss=combined_loss,
+                    gradient=momentum_gradient,
+                    mask=mask,
+                    optimizer_state={
+                        "pe_weight": self.pe_weight,
+                        "epe_weight": self.epe_weight,
+                        "momentum_beta": self.momentum_beta
+                    },
+                    time_elapsed=time.time() - start_time
+                )
+
+            # 更新掩膜
+            mask = mask - learning_rate * momentum_gradient
+            mask = np.clip(mask, 0, 1)
+
+            # 进度输出
+            if iteration % 10 == 0:
+                print(f"Iter {iteration:3d}: "
+                      f"PE={pe_loss:.0f}, EPE={epe_loss:.0f}, "
+                      f"Total={combined_loss:.0f}")
+
+        if csv_logger:
+            csv_logger.close()
+
+        total_time = time.time() - start_time
+
+        print(f"\n{'=' * 60}")
+        print("MOMENTUM-CONFIG OPTIMIZATION COMPLETED")
+        print(f"{'=' * 60}")
+        print(f"Total time: {total_time:.2f}s")
+        print(f"Best combined loss: {best_combined_loss:.2f}")
+        print(f"PE: {history['pe_loss'][0]:.1f} -> {history['pe_loss'][-1]:.1f}")
+        print(f"EPE: {history['epe_loss'][0]:.1f} -> {history['epe_loss'][-1]:.1f}")
+        print(f"{'=' * 60}")
+
+        return best_mask, history
+
+
+# 入口函数（无边缘约束）
+def inverse_lithography_optimization_momentum_config(initial_mask, target_image,
+                                                      learning_rate=0.1,
+                                                      max_iterations=ILT_MAX_ITERATIONS,
+                                                      **config_params):
+    """
+    动量ConFIG优化入口函数（包含梯度归一化，无边缘约束）
+    """
+    optimizer = MomentumConFIGOptimizer(
+        momentum_beta=0.8
+    )
+
+    optimized_mask, history = optimizer.optimize(
         initial_mask=initial_mask,
         target=target_image,
         learning_rate=learning_rate,
         max_iterations=max_iterations,
-        comb_weight=comb_weight,
-        **optimizer_params
+        **config_params
     )
 
     return optimized_mask, history

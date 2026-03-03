@@ -37,8 +37,8 @@ class BaseEdgeConFIGOptimizer:
         self.edge_mask = None
 
         # 固定权重参数
-        self.pe_weight = 0.4
-        self.epe_weight = 0.4
+        self.pe_weight = 0
+        self.epe_weight = 1
 
         # 预计算
         self.singular_values = None
@@ -120,7 +120,7 @@ class BaseEdgeConFIGOptimizer:
         k_actual = min(k, min(TCC_csr.shape) - 1)
         print(f"TCC SVD precomputation completed with {k_actual} singular values")
 
-        U, S, Vh = svds(TCC_csr, k=k_actual)
+        U, S, Vh = svds(TCC_csr, k=k_actual, random_state=42)
         significant_mask = S > (np.max(S) * 0.01)
         S, U = S[significant_mask], U[:, significant_mask]
         idx = np.argsort(S)[::-1]
@@ -175,7 +175,7 @@ class BaseEdgeConFIGOptimizer:
         # 计算PE损失
         pe_loss = np.sum((P - target) ** 2)
 
-        # 计算边缘权重
+        ### 计算边缘权重
         target_edges = self._detect_edge_region(target)
 
         # EPE损失
@@ -325,8 +325,8 @@ class BaseEdgeConFIGOptimizer:
 
 class MomentumEdgeConFIGOptimizer(BaseEdgeConFIGOptimizer):
     """
-    动量边缘约束ConFIG优化器
-    继承基础版本，添加方向动量
+    动量边缘约束ConFIG优化器（带梯度归一化）
+    继承基础版本，添加方向动量，并在加权前对 PE 和 EPE 梯度进行量级归一化
     """
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA,
@@ -404,7 +404,7 @@ class MomentumEdgeConFIGOptimizer(BaseEdgeConFIGOptimizer):
             init_pe, init_epe, _, _, _, _ = self._compute_gradients(mask, target)
             csv_logger.start_logging(
                 optimizer_type="Momentum-Edge-ConFIG",
-                loss_type="PE+EPE (Fixed Weights + Momentum)",
+                loss_type="PE+EPE (Fixed Weights + Momentum + Gradient Norm)",
                 learning_rate=learning_rate,
                 initial_loss=init_pe + init_epe,
                 target_shape=f"{target.shape}",
@@ -431,6 +431,17 @@ class MomentumEdgeConFIGOptimizer(BaseEdgeConFIGOptimizer):
             pe_loss, epe_loss, grad_pe, grad_epe, aerial, printed = \
                 self._compute_gradients(mask, target)
 
+            # ========== 新增：梯度归一化（使 grad_pe 与 grad_epe 量级一致）==========
+            grad_pe_norm = np.linalg.norm(grad_pe)
+            grad_epe_norm = np.linalg.norm(grad_epe)
+            eps = 1e-8
+            if grad_pe_norm > eps and grad_epe_norm > eps:
+                # 将 grad_epe 缩放到与 grad_pe 相同的 L2 范数
+                scale = grad_pe_norm / grad_epe_norm
+                grad_epe = grad_epe * scale
+            # 若某一梯度为零，则不进行缩放（保留原值）
+            # ==================================================================
+
             # 固定权重融合梯度
             combined_gradient = self.pe_weight * grad_pe + self.epe_weight * grad_epe
 
@@ -440,7 +451,7 @@ class MomentumEdgeConFIGOptimizer(BaseEdgeConFIGOptimizer):
             # 应用边缘约束
             edge_constrained_gradient = self._apply_edge_constraint(momentum_gradient, self.edge_mask)
 
-            # 计算组合损失
+            # 计算组合损失（注意：损失值未缩放，仍按原始权重计算）
             combined_loss = pe_loss * self.pe_weight + epe_loss * self.epe_weight
 
             # 记录历史
@@ -500,41 +511,18 @@ class MomentumEdgeConFIGOptimizer(BaseEdgeConFIGOptimizer):
         return best_mask, history, self.edge_mask
 
 
-# 入口函数
-def inverse_lithography_optimization_base_edge_config(initial_mask, target_image,
-                                                      learning_rate=0.1,
-                                                      max_iterations=ILT_MAX_ITERATIONS,
-                                                      edge_pixel_range=5,
-                                                      **config_params):
-    """
-    基础边缘约束ConFIG优化入口函数
-    """
-    optimizer = BaseEdgeConFIGOptimizer(
-        edge_pixel_range=edge_pixel_range
-    )
-
-    optimized_mask, history, edge_mask = optimizer.optimize(
-        initial_mask=initial_mask,
-        target=target_image,
-        learning_rate=learning_rate,
-        max_iterations=max_iterations,
-        **config_params
-    )
-
-    return optimized_mask, history, edge_mask
-
-
+# 入口函数保持不变
 def inverse_lithography_optimization_momentum_edge_config(initial_mask, target_image,
                                                           learning_rate=0.1,
                                                           max_iterations=ILT_MAX_ITERATIONS,
                                                           edge_pixel_range=5,
                                                           **config_params):
     """
-    动量边缘约束ConFIG优化入口函数
+    动量边缘约束ConFIG优化入口函数（包含梯度归一化）
     """
     optimizer = MomentumEdgeConFIGOptimizer(
         edge_pixel_range=edge_pixel_range,
-        momentum_beta=0.85
+        momentum_beta=0.8
     )
 
     optimized_mask, history, edge_mask = optimizer.optimize(

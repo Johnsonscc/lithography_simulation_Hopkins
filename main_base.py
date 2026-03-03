@@ -22,8 +22,8 @@ def main():
     experiment_tag = os.path.splitext(target_name)[0]
 
     # 2. 配置参数
-    EDGE_PIXEL_RANGE = 5  # 边缘像素范围
-    OPTIMIZER_TYPE = 'adam'  # 优化器类型
+    EDGE_PIXEL_RANGE = 10  # 边缘像素范围
+    OPTIMIZER_TYPE = 'sgd'  # 优化器类型
 
     print(f"Edge-Constrained PE Optimization Configuration:")
     print(f"  - Edge Pixel Range: {EDGE_PIXEL_RANGE}px")

@@ -1,0 +1,14 @@
+# ===========================================
+# Inverse Lithography Optimization Log
+# ===========================================
+# Timestamp: 2026-01-21 11:00:22
+# Optimizer Type: ConFIG_Momentum
+# Loss Type: PE+EPE
+# Learning Rate: 0.05
+# Initial Loss: 135.230310
+# Target Shape: 100x100
+# Optimizer Parameters:
+#   use_momentum: True
+# ===========================================
+
+iteration,loss,grad_norm,mask_min,mask_max,mask_mean,mask_std,time_elapsed

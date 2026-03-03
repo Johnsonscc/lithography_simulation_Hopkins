@@ -57,7 +57,7 @@ def compute_tcc_svd(J, P, fx, fy, k, sparsity_threshold=0.001):
 
 
     print(f"Performing SVD with {k} components...")
-    U, S, Vh = svds(TCC_csr, k=k)
+    U, S, Vh = svds(TCC_csr, k=k,random_state=42)
 
     # 过滤掉太小的奇异值
     significant_mask = S > (np.max(S) * 0.01)  # 只保留大于1%最大值的奇异值

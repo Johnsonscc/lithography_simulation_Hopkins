@@ -10,7 +10,6 @@ from utils.visualization import plot_comparison, plot_dual_axis_loss_history, pl
 
 # 导入两种优化器
 from core.inverse_lithography_config import (
-    inverse_lithography_optimization_base_edge_config,
     inverse_lithography_optimization_momentum_edge_config
 )
 
@@ -34,44 +33,23 @@ def main():
     epe_init = epe_loss(target_image, resist_init)
 
     # 3. 选择优化类型
-    OPTIMIZATION_TYPE = "config_momentum_edge"  # 可选: "config_edge" 或 "config_momentum_edge"
-    EDGE_PIXEL_RANGE = 5
+    OPTIMIZATION_TYPE = "config_momentum_edge"
+    EDGE_PIXEL_RANGE = 0
 
-    print("\n" + "=" * 70)
-    if OPTIMIZATION_TYPE == "config_edge":
-        print(">>> Starting Edge-Constrained ConFIG Inverse Lithography Optimization")
-        print(f"  - Edge Pixel Range: {EDGE_PIXEL_RANGE} pixels")
-        print("-" * 70)
+    print(">>> Starting Momentum Edge-Constrained ConFIG Inverse Lithography Optimization")
+    print(f"  - Edge Pixel Range: {EDGE_PIXEL_RANGE} pixels")
+    print("-" * 70)
 
-        # 运行基础边缘约束优化
-        final_mask, history, edge_mask = inverse_lithography_optimization_base_edge_config(
-            initial_mask=initial_mask,
-            target_image=target_image,
-            learning_rate=0.1,
-            max_iterations=100,
-            edge_pixel_range=EDGE_PIXEL_RANGE,
-            log_csv=True,
-            experiment_tag=f"{experiment_tag}_edge_config"
-        )
-
-    elif OPTIMIZATION_TYPE == "config_momentum_edge":
-        print(">>> Starting Momentum Edge-Constrained ConFIG Inverse Lithography Optimization")
-        print(f"  - Edge Pixel Range: {EDGE_PIXEL_RANGE} pixels")
-        print("-" * 70)
-
-        # 运行动量边缘约束优化
-        final_mask, history, edge_mask = inverse_lithography_optimization_momentum_edge_config(
-            initial_mask=initial_mask,
-            target_image=target_image,
-            learning_rate=0.1,
-            max_iterations=100,
-            edge_pixel_range=EDGE_PIXEL_RANGE,
-            log_csv=True,
-            experiment_tag=f"{experiment_tag}_momentum_edge_config"
-        )
-
-    else:
-        raise ValueError(f"Unknown optimization type: {OPTIMIZATION_TYPE}")
+    # 运行动量边缘约束优化
+    final_mask, history, edge_mask = inverse_lithography_optimization_momentum_edge_config(
+        initial_mask=initial_mask,
+        target_image=target_image,
+        learning_rate=0.1,
+        max_iterations=100,
+        edge_pixel_range=EDGE_PIXEL_RANGE,
+        log_csv=True,
+        experiment_tag=f"{experiment_tag}_momentum_edge_config"
+    )
 
     # 4. 最终结果评估
     print("\nRunning final evaluation...")

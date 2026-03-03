@@ -70,9 +70,9 @@ OPTIMIZER_TYPE='cg'
 INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
 TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
 
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/stage1/optimized_mask_gcd_45nm_origin_01_adam.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/stage1/results_comparison_gcd_45nm_origin_01_adam.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/stage1/fitness_evolution_gcd_45nm_origin_01_adam.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/stage1/optimized_mask_gcd_45nm_origin_01_config.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/stage1/results_comparison_gcd_45nm_origin_01_config.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/stage1/fitness_evolution_gcd_45nm_origin_01_config.png"
 
 # 可视化参数1
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
