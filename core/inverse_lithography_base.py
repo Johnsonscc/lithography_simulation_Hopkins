@@ -38,6 +38,9 @@ class EdgeConstrainedInverseLithographyOptimizer:
         # 边缘更新掩膜
         self.update_mask = None
 
+        # TCC Matrix storage for visualization
+        self.tcc_matrix = None
+
         self.singular_values = None
         self.eigen_functions = None
         self._precompute_tcc_svd()
@@ -96,6 +99,10 @@ class EdgeConstrainedInverseLithographyOptimizer:
         fx = np.linspace(-freq, freq, self.lx)
         fy = np.linspace(-freq, freq, self.ly)
         TCC_4d = self._compute_full_tcc_matrix(fx, fy)
+
+        # Store the TCC matrix for visualization
+        self.tcc_matrix = TCC_4d
+
         self.singular_values, self.eigen_functions = self._svd_of_tcc_matrix(TCC_4d, self.k_svd)
 
     def photoresist_model(self, intensity):

@@ -4,7 +4,8 @@ import numpy as np
 from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.evaluation_function import pe_loss, epe_loss
-from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization
+from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization, \
+    plot_tcc_structure
 
 # 导入边缘约束优化器
 from core.inverse_lithography_base import EdgeConstrainedInverseLithographyOptimizer
@@ -146,6 +147,17 @@ def main():
         edge_pixel_range=EDGE_PIXEL_RANGE,
         save_path=edge_vis_path
     )
+
+    # TCC 矩阵可视化 (新增)
+    tcc_vis_path = FITNESS_PLOT_PATH.replace('.png', '_tcc_matrix.png')
+    print(f"Saving TCC matrix visualization to {tcc_vis_path}...")
+    if optimizer.tcc_matrix is not None:
+        plot_tcc_structure(
+            optimizer.tcc_matrix,
+            save_path=tcc_vis_path
+        )
+    else:
+        print("TCC Matrix not available for visualization.")
 
     print("\nEdge-constrained PE optimization completed successfully!")
 
