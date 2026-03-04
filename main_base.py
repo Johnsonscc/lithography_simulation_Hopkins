@@ -4,8 +4,7 @@ import numpy as np
 from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.evaluation_function import pe_loss, epe_loss
-from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization, \
-    plot_tcc_structure
+from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization, plot_tcc_structure, plot_loss_and_nils
 
 # 导入边缘约束优化器
 from core.inverse_lithography_base import EdgeConstrainedInverseLithographyOptimizer
@@ -23,7 +22,7 @@ def main():
     experiment_tag = os.path.splitext(target_name)[0]
 
     # 2. 配置参数
-    EDGE_PIXEL_RANGE = 10  # 边缘像素范围
+    EDGE_PIXEL_RANGE = 5  # 边缘像素范围
     OPTIMIZER_TYPE = 'sgd'  # 优化器类型
 
     print(f"Edge-Constrained PE Optimization Configuration:")
@@ -39,9 +38,9 @@ def main():
 
     # 4. 进行初始状态评估
     print("Running initial evaluation...")
-    pe_init, epe_init, _, aerial_init, resist_init = optimizer._compute_analytical_gradient(
-        initial_mask, target_image
-    )
+    # 获取基础结果（5个返回值）
+    pe_init, epe_init, _, aerial_init, resist_init = optimizer._compute_analytical_gradient(initial_mask, target_image)
+
 
     # 5. 执行优化
     print("\nStarting edge-constrained optimization process...")
@@ -57,9 +56,9 @@ def main():
 
     # 6. 最终结果评估
     print("\nRunning final evaluation...")
-    pe_final, epe_final, _, aerial_best, resist_best = optimizer._compute_analytical_gradient(
-        final_mask, target_image
-    )
+    # 获取基础结果（5个返回值）
+    pe_final, epe_final, _, aerial_best, resist_best  = optimizer._compute_analytical_gradient(final_mask, target_image)
+
 
     end_time = time.time()
 
@@ -148,19 +147,10 @@ def main():
         save_path=edge_vis_path
     )
 
-    # TCC 矩阵可视化 (新增)
-    tcc_vis_path = FITNESS_PLOT_PATH.replace('.png', '_tcc_matrix.png')
-    print(f"Saving TCC matrix visualization to {tcc_vis_path}...")
-    if optimizer.tcc_matrix is not None:
-        plot_tcc_structure(
-            optimizer.tcc_matrix,
-            save_path=tcc_vis_path
-        )
-    else:
-        print("TCC Matrix not available for visualization.")
-
-    print("\nEdge-constrained PE optimization completed successfully!")
-
+    # NILS曲线图
+    nils_plot_path = FITNESS_PLOT_PATH.replace('.png', '_nils.png')
+    print(f"Saving loss and NILS plot to {nils_plot_path}...")
+    plot_loss_and_nils(history, save_path=nils_plot_path)
 
 if __name__ == "__main__":
     main()

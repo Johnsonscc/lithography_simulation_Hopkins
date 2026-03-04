@@ -84,7 +84,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
         k_actual = min(k, min(TCC_csr.shape) - 1)
         print(f"TCC SVD precomputation completed with {k_actual} singular values")
 
-        U, S, Vh = svds(TCC_csr, k=k_actual,random_state=42)
+        U, S, Vh = svds(TCC_csr, k=k_actual, random_state=42)
         significant_mask = S > (np.max(S) * 0.01)
         S, U = S[significant_mask], U[:, significant_mask]
         idx = np.argsort(S)[::-1]
@@ -250,6 +250,29 @@ class EdgeConstrainedInverseLithographyOptimizer:
 
         return pe_loss, epe_loss, np.real(gradient), intensity_norm, P
 
+    def compute_nils(self, aerial, target, cd=NILS_CD):
+        """
+        计算目标边缘区域的平均 NILS
+        aerial : 空间像强度（2D numpy 数组）
+        target : 目标二值图像
+        cd     : 特征尺寸（线宽），用于归一化
+        """
+        # 避免 log(0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_aerial = np.log(aerial + 1e-12)
+        # 计算梯度
+        gy, gx = np.gradient(log_aerial)
+        grad_mag = np.sqrt(gx**2 + gy**2)
+        # NILS 图 = cd * 梯度幅值
+        nils_map = cd * grad_mag
+        # 在目标边缘附近取平均（使用较小的边缘范围聚焦于真实边缘）
+        edge_region = self._detect_edge_region(target, edge_pixel_range=2)
+        if np.sum(edge_region) > 0:
+            avg_nils = np.sum(nils_map * edge_region) / np.sum(edge_region)
+        else:
+            avg_nils = 0.0
+        return avg_nils
+
     def optimize(self, initial_mask, target, learning_rate=None,
                  max_iterations=ILT_MAX_ITERATIONS,
                  log_csv=True, log_dir="logs", experiment_tag="",
@@ -284,9 +307,10 @@ class EdgeConstrainedInverseLithographyOptimizer:
         history = {
             'pe_loss': [],
             'epe_loss': [],
+            'nils': [],           # 新增 NILS 记录
             'learning_rates': [],
             'grad_norms': [],
-            'update_region_size': []  # 记录实际更新的像素比例
+            'update_region_size': []
         }
         start_time = time.time()
 
@@ -296,6 +320,10 @@ class EdgeConstrainedInverseLithographyOptimizer:
 
         for iteration in range(max_iterations):
             pe_loss, epe_loss, gradient, aerial, printed = self._compute_analytical_gradient(mask, target)
+
+            # 计算 NILS 并记录
+            nils = self.compute_nils(aerial, target)
+            history['nils'].append(nils)
 
             # 应用更新掩膜
             masked_gradient = self._apply_update_mask(gradient, self.update_mask)
@@ -324,7 +352,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
                     masked_gradient,
                     mask,
                     self.optimizer_state,
-                    time.time() - start_time
+                    time.time() - start_time,
+                    nils=nils      # 传入 NILS
                 )
 
             # 使用掩膜后的梯度更新
@@ -332,7 +361,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
 
             if iteration % 20 == 0:
                 print(f"Iter {iteration}: PE Loss={pe_loss:.4f}, Best PE={best_pe_loss:.4f}, "
-                      f"Update Region={update_ratio:.1f}%, Grad Norm={np.linalg.norm(masked_gradient):.4f}")
+                      f"NILS={nils:.4f}, Update Region={update_ratio:.1f}%, Grad Norm={np.linalg.norm(masked_gradient):.4f}")
 
         if csv_logger:
             csv_logger.close()

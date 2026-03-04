@@ -54,8 +54,8 @@ class OptimizationLogger:
         self.writer.writerow(["# ==========================================="])
         self.writer.writerow([])  # 空行分隔
 
-        # CSV表头
-        headers = ["iteration", "loss", "grad_norm",
+        # CSV表头（添加了 nils 字段）
+        headers = ["iteration", "loss", "grad_norm", "nils",
                    "mask_min", "mask_max", "mask_mean", "mask_std"]
 
         # 根据优化器类型添加特定字段
@@ -78,7 +78,7 @@ class OptimizationLogger:
         return self.filepath
 
     def log_iteration(self, iteration, loss, gradient, mask,
-                      optimizer_state=None, time_elapsed=0):
+                      optimizer_state=None, time_elapsed=0, nils=None):
         """记录单次迭代数据"""
         # 计算基础指标
         grad_norm = float(np.linalg.norm(gradient))
@@ -87,8 +87,9 @@ class OptimizationLogger:
         mask_mean = float(np.mean(mask))
         mask_std = float(np.std(mask))
 
-        # 构建数据行
+        # 构建数据行（包含 nils）
         row_data = [iteration, float(loss), grad_norm,
+                    float(nils) if nils is not None else '',
                     mask_min, mask_max, mask_mean, mask_std]
 
         # 添加优化器特定指标
@@ -108,7 +109,7 @@ class OptimizationLogger:
                 row_data.append(square_avg_norm)
             elif 'direction' in optimizer_state:
                 direction_norm = float(np.linalg.norm(optimizer_state['direction']))
-                # 简化处理beta值
+                # 简化处理beta值（实际可从优化器状态获取，此处留空或传0）
                 beta = 0.0
                 row_data.extend([direction_norm, beta])
 
