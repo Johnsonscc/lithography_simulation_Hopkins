@@ -154,22 +154,26 @@ def plot_edge_constraint_visualization(target_image, initial_mask, final_mask, u
 
 def plot_loss_and_nils(history, save_path=None):
     """
-    绘制优化过程中的 PE 损失和 NILS 曲线
-    history : 字典，必须包含 'pe_loss' 和 'nils' 键
+    绘制优化过程中的 PE、EPE 损失和 NILS 曲线
+    history : 字典，必须包含 'pe_loss'，可选 'epe_loss' 和 'nils'
     """
     plt.style.use('seaborn-v0_8-muted')
     fig, ax1 = plt.subplots(figsize=(10, 6), dpi=100)
 
     iterations = np.arange(len(history['pe_loss']))
 
-    # 左轴：PE损失
+    # 左轴：PE 和 EPE 损失
     color_pe = '#1f77b4'
     ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('PE Loss', color=color_pe)
+    ax1.set_ylabel('Loss', color='black')
     ax1.plot(iterations, history['pe_loss'], color=color_pe, label='PE Loss')
-    ax1.tick_params(axis='y', labelcolor=color_pe)
+    if 'epe_loss' in history and len(history['epe_loss']) > 0:
+        color_epe = '#d62728'
+        ax1.plot(iterations, history['epe_loss'], color=color_epe, label='EPE Loss')
+    ax1.tick_params(axis='y', labelcolor='black')
+    ax1.legend(loc='upper left')
 
-    # 右轴：NILS（如果存在）
+    # 右轴：NILS
     if 'nils' in history and len(history['nils']) > 0:
         ax2 = ax1.twinx()
         color_nils = '#2ca02c'
@@ -177,6 +181,7 @@ def plot_loss_and_nils(history, save_path=None):
         ax2.plot(iterations, history['nils'], color=color_nils,
                  linestyle='--', label='NILS')
         ax2.tick_params(axis='y', labelcolor=color_nils)
+        ax2.legend(loc='upper right')
 
     plt.title('Optimization Progress: Loss and NILS')
     fig.tight_layout()

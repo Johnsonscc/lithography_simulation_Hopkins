@@ -4,7 +4,8 @@ import numpy as np
 from config.parameters import *
 from utils.image_processing import load_image, save_image
 from core.evaluation_function import pe_loss, epe_loss
-from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization, plot_tcc_structure, plot_loss_and_nils
+from utils.visualization import plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization, \
+    plot_tcc_structure, plot_loss_and_nils
 
 # 导入边缘约束优化器
 from core.inverse_lithography_base import EdgeConstrainedInverseLithographyOptimizer
@@ -38,9 +39,9 @@ def main():
 
     # 4. 进行初始状态评估
     print("Running initial evaluation...")
-    # 获取基础结果（5个返回值）
-    pe_init, epe_init, _, aerial_init, resist_init = optimizer._compute_analytical_gradient(initial_mask, target_image)
-
+    pe_init, epe_init, _, aerial_init, resist_init = optimizer._compute_analytical_gradient(
+        initial_mask, target_image
+    )
 
     # 5. 执行优化
     print("\nStarting edge-constrained optimization process...")
@@ -56,9 +57,9 @@ def main():
 
     # 6. 最终结果评估
     print("\nRunning final evaluation...")
-    # 获取基础结果（5个返回值）
-    pe_final, epe_final, _, aerial_best, resist_best  = optimizer._compute_analytical_gradient(final_mask, target_image)
-
+    pe_final, epe_final, _, aerial_best, resist_best = optimizer._compute_analytical_gradient(
+        final_mask, target_image
+    )
 
     end_time = time.time()
 
@@ -123,16 +124,13 @@ def main():
         save_path=RESULTS_IMAGE_PATH
     )
 
-    # 损失历史图
+    # 损失历史图（双轴：PE和EPE）
     print(f"Saving loss history plot to {FITNESS_PLOT_PATH}...")
-
-    # 准备可视化数据
     history_enhanced = history.copy()
     if 'update_region_size' in history:
         history_enhanced['additional_metrics'] = {
             'Update Region %': history['update_region_size']
         }
-
     plot_dual_axis_loss_history(history_enhanced, save_path=FITNESS_PLOT_PATH)
 
     # 边缘约束可视化
@@ -147,10 +145,13 @@ def main():
         save_path=edge_vis_path
     )
 
-    # NILS曲线图
-    nils_plot_path = FITNESS_PLOT_PATH.replace('.png', '_nils.png')
+    # 新增：PE、EPE和NILS曲线图
+    nils_plot_path = FITNESS_PLOT_PATH.replace('.png', '_loss_nils.png')
     print(f"Saving loss and NILS plot to {nils_plot_path}...")
     plot_loss_and_nils(history, save_path=nils_plot_path)
+
+    print("\nEdge-constrained PE optimization completed successfully!")
+
 
 if __name__ == "__main__":
     main()
