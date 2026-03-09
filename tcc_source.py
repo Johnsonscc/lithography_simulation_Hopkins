@@ -16,11 +16,11 @@ rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
 rcParams['axes.unicode_minus'] = False  # 解决保存图像是负号'-'显示为方块的问题
 
 # Step 1: 导入初始掩膜图像和目标图像
-initial_mask = iio.imread("../lithography_simulation_Hopkins/data/input/cell2048.png")
+initial_mask = iio.imread("../lithography_simulation_Hopkins/data/input/test00.png")
 if len(initial_mask.shape)>2:
     initial_mask = rgb2gray(initial_mask)
 
-target_image = iio.imread("../lithography_simulation_Hopkins/data/input/cell2048.png")
+target_image = iio.imread("../lithography_simulation_Hopkins/data/input/test00.png")
 if len(target_image.shape)>2:
     target_image = rgb2gray(target_image)
 

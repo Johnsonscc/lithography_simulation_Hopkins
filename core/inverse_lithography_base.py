@@ -20,7 +20,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA, dx=DX, dy=DY,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
-                 optimizer_type=OPTIMIZER_TYPE, edge_pixel_range=10):
+                 optimizer_type=OPTIMIZER_TYPE, edge_pixel_range=5,
+                 canny_low_threshold=1, canny_high_threshold=300):
         self.lambda_ = lambda_
         self.na = na
         self.sigma = sigma
@@ -33,6 +34,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
         self.tr = tr
         self.optimizer_type = optimizer_type
         self.edge_pixel_range = edge_pixel_range
+        self.canny_low_threshold = canny_low_threshold
+        self.canny_high_threshold = canny_high_threshold
         self.optimizer_state = {}
 
         # 边缘更新掩膜
@@ -46,7 +49,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
         self._precompute_tcc_svd()
 
         logger.info(
-            f"EdgeConstrainedInverseLithographyOptimizer initialized with {optimizer_type}, edge_range={edge_pixel_range}")
+            f"EdgeConstrainedInverseLithographyOptimizer initialized with {optimizer_type}, edge_range={edge_pixel_range}, "
+            f"Canny thresholds=({canny_low_threshold}, {canny_high_threshold})")
 
     def pupil_response_function(self, fx, fy):
         r = np.sqrt(fx ** 2 + fy ** 2)
@@ -165,29 +169,22 @@ class EdgeConstrainedInverseLithographyOptimizer:
 
         return np.clip(new_mask, 0, 1)
 
-    def _detect_edge_region(self, target, edge_pixel_range=10):
+    def _detect_edge_region(self, target, edge_pixel_range=5):
         """
-        检测目标图像的边缘区域，生成更新区域掩膜
+        检测目标图像的边缘区域，生成更新区域掩膜（用于优化更新）
+        使用 Canny 检测边缘，并对边缘进行膨胀（膨胀半径由 edge_pixel_range 控制）
         """
         # 确保目标是二值图像
         binary_target = (target > 0.5).astype(np.uint8)
 
-        # 方法1: 使用Sobel算子检测边缘
-        sobelx = cv2.Sobel(binary_target, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(binary_target, cv2.CV_64F, 0, 1, ksize=3)
-        edge_magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
+        # 转换为 0-255 范围以适应 Canny
+        target_uint8 = (binary_target * 255).astype(np.uint8)
 
-        # 方法2: 使用形态学梯度检测边缘 (膨胀-腐蚀)
-        kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(binary_target, kernel, iterations=1)
-        eroded = cv2.erode(binary_target, kernel, iterations=1)
-        morphological_edge = dilated - eroded
+        # Canny 边缘检测
+        edges = cv2.Canny(target_uint8, self.canny_low_threshold, self.canny_high_threshold)
+        edge_binary = (edges > 0).astype(np.uint8)  # 转换为 0/1
 
-        # 组合边缘检测结果
-        combined_edge = edge_magnitude + morphological_edge
-        edge_binary = (combined_edge > 0).astype(np.uint8)
-
-        # 对边缘区域进行膨胀，扩大更新区域
+        # 对边缘区域进行膨胀，扩大更新区域（内外均覆盖）
         if edge_pixel_range > 0:
             kernel_size = 2 * edge_pixel_range + 1
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
@@ -195,22 +192,52 @@ class EdgeConstrainedInverseLithographyOptimizer:
         else:
             update_mask = edge_binary
 
-        # 也考虑图案内部区域（可能需要微调）
-        pattern_inner = cv2.erode(binary_target, kernel, iterations=edge_pixel_range // 2)
-        update_mask = np.logical_or(update_mask, pattern_inner).astype(np.float64)
-
-        # 确保边缘平滑
-        update_mask = cv2.GaussianBlur(update_mask.astype(np.float32), (5, 5), 1.0)
-
         logger.info(
             f"Edge region detection completed. Update region: {np.sum(update_mask > 0.1) / update_mask.size * 100:.1f}% of total area")
 
         return update_mask
 
+    def _detect_edge_region_original(self, target, edge_pixel_range=5):
+        """
+        原先的边缘检测方法（Sobel + 形态学梯度 + 内部区域补充）
+        用于 NILS 计算，以保持指标一致性
+        """
+        binary_target = (target > 0.5).astype(np.uint8)
+
+        # Sobel 边缘检测
+        sobelx = cv2.Sobel(binary_target, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(binary_target, cv2.CV_64F, 0, 1, ksize=3)
+        edge_magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
+
+        # 形态学梯度
+        kernel = np.ones((3, 3), np.uint8)
+        dilated = cv2.dilate(binary_target, kernel, iterations=1)
+        eroded = cv2.erode(binary_target, kernel, iterations=1)
+        morphological_edge = dilated - eroded
+
+        # 组合边缘
+        combined_edge = edge_magnitude + morphological_edge
+        edge_binary = (combined_edge > 0).astype(np.uint8)
+
+        # 膨胀
+        if edge_pixel_range > 0:
+            kernel_size = 2 * edge_pixel_range + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            update_mask = cv2.dilate(edge_binary, kernel, iterations=1)
+        else:
+            update_mask = edge_binary
+
+        # 内部区域补充
+        pattern_inner = cv2.erode(binary_target, kernel, iterations=edge_pixel_range // 2)
+        update_mask = np.logical_or(update_mask, pattern_inner).astype(np.float64)
+
+        # 平滑
+        update_mask = cv2.GaussianBlur(update_mask.astype(np.float32), (5, 5), 1.0)
+
+        return update_mask
+
     def _apply_update_mask(self, gradient, update_mask):
-        """
-        将梯度限制在更新区域内
-        """
+        # 将梯度限制在更新区域内
         # 对更新掩膜进行平滑处理，避免硬边界
         smooth_mask = cv2.GaussianBlur(update_mask, (3, 3), 0.5)
 
@@ -252,25 +279,36 @@ class EdgeConstrainedInverseLithographyOptimizer:
 
     def compute_nils(self, aerial, target, cd=NILS_CD):
         """
-        计算目标边缘区域的平均 NILS
-        aerial : 空间像强度（2D numpy 数组）
-        target : 目标二值图像
-        cd     : 特征尺寸（线宽），用于归一化
+        计算目标边缘区域的平均 NILS (Normalized Image Log-Slope)
+        公式: NILS = w * d(ln I)/dx = w * (1/I) * dI/dx
         """
-        # 避免 log(0)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            log_aerial = np.log(aerial + 1e-12)
-        # 计算梯度
-        gy, gx = np.gradient(log_aerial)
-        grad_mag = np.sqrt(gx**2 + gy**2)
-        # NILS 图 = cd * 梯度幅值
-        nils_map = cd * grad_mag
-        # 在目标边缘附近取平均（使用较小的边缘范围聚焦于真实边缘）
-        edge_region = self._detect_edge_region(target, edge_pixel_range=2)
-        if np.sum(edge_region) > 0:
-            avg_nils = np.sum(nils_map * edge_region) / np.sum(edge_region)
+        # 1. 计算物理梯度 (利用 self.dy 和 self.dx 确保量纲正确)
+        # 注意 np.gradient 默认返回 (y方向梯度, x方向梯度)
+        gy, gx = np.gradient(aerial, self.dy, self.dx)
+        grad_mag = np.sqrt(gx ** 2 + gy ** 2)
+
+        # 2. 计算对数斜率 (Log-Slope)
+        # 使用安全的强度截断，避免除以 0 或极小噪声引起的突变
+        safe_aerial = np.maximum(aerial, 1e-6)
+        log_slope = grad_mag / safe_aerial
+
+        # 3. 乘以名义线宽 (w_cd) 得到全图 NILS 分布
+        nils_map = cd * log_slope
+
+        # 4. 提取【严格单像素宽度】的目标边缘
+        # 切忌使用带有膨胀和平滑的 self._detect_edge_region
+        binary_target = (target > 0.5).astype(np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
+        dilated = cv2.dilate(binary_target, kernel, iterations=1)
+        eroded = cv2.erode(binary_target, kernel, iterations=1)
+        strict_edge_mask = (dilated - eroded) > 0  # 仅保留真正的边界像素
+
+        # 5. 仅在严格边界处计算平均 NILS
+        if np.sum(strict_edge_mask) > 0:
+            avg_nils = np.sum(nils_map * strict_edge_mask) / np.sum(strict_edge_mask)
         else:
             avg_nils = 0.0
+
         return avg_nils
 
     def optimize(self, initial_mask, target, learning_rate=None,
@@ -282,7 +320,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
         best_mask = initial_mask.copy()
         best_pe_loss = float('inf')
 
-        # 检测边缘区域，生成更新掩膜
+        # 检测边缘区域，生成更新掩膜（基于 Canny）
         print("Detecting edge regions for constrained optimization...")
         self.update_mask = self._detect_edge_region(target, self.edge_pixel_range)
 
@@ -378,13 +416,17 @@ def inverse_lithography_optimization_edge_constrained_base(initial_mask, target_
                                                            max_iterations=ILT_MAX_ITERATIONS,
                                                            optimizer_type=OPTIMIZER_TYPE,
                                                            edge_pixel_range=10,
+                                                           canny_low_threshold=50,
+                                                           canny_high_threshold=150,
                                                            **optimizer_params):
     """
     边缘约束的单PE优化入口函数
     """
     optimizer = EdgeConstrainedInverseLithographyOptimizer(
         optimizer_type=optimizer_type,
-        edge_pixel_range=edge_pixel_range
+        edge_pixel_range=edge_pixel_range,
+        canny_low_threshold=canny_low_threshold,
+        canny_high_threshold=canny_high_threshold
     )
 
     optimized_mask, history, update_mask = optimizer.optimize(

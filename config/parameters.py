@@ -2,19 +2,15 @@
 import matplotlib.pyplot as plt
 # 光刻仿真参数
 LAMBDA = 405  # 波长（单位：纳米）
-Z = 803000000  # 距离（单位：纳米）774
-DX = DY = 7560  # 像素尺寸（单位：纳米）
+Z = 0 # 距离（单位：纳米）774
+DX = DY = 40  # 像素尺寸（单位：纳米）
 LX = LY = 1000  # 图像尺寸（单位：像素）
 N = 1.5  # 折射率（无量纲）
 SIGMA = 0.5  # 部分相干因子（无量纲）
 NA = 0.5  # 数值孔径（无量纲）
 K_SVD = 5 #奇异值数目（无量纲）
-NILS_CD = 10  # 请根据实际图案调整
+NILS_CD = 400  # 关键尺寸（单位：纳米）
 
-'''
-NA = 0.5  # 数值孔径（无量纲）
-LAMBDA = 405  # 波长（单位：纳米）
-'''
 # 光刻胶参数
 A = 30.0            # sigmoid函数梯度
 TR = 0.5            # 阈值参数
@@ -30,7 +26,6 @@ ILT_LEARNING_RATE = 0.1
 ILT_K_SVD = 5
 ILT_MAX_ITERATIONS = 100
 
-# 优化器特定参数
 # 优化器特定参数
 ILT_OPTIMIZER_adamS = {
     'sgd': {
@@ -68,12 +63,12 @@ ILT_OPTIMIZER_adamS = {
 OPTIMIZER_TYPE='cg'
 
 # 文件路径
-INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
-TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_01.png"
+INITIAL_MASK_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_025.png"
+TARGET_IMAGE_PATH = "../lithography_simulation_Hopkins/data/input/gcd_45nm_origin_025.png"
 
-OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/stage1/optimized_mask_gcd_45nm_origin_01_config.png"
-RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/stage1/results_comparison_gcd_45nm_origin_01_config.png"
-FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/stage1/fitness_evolution_gcd_45nm_origin_01_config.png"
+OUTPUT_MASK_PATH = "../lithography_simulation_Hopkins/data/output/stage1/optimized_mask_gcd_45nm_origin_025_config.png"
+RESULTS_IMAGE_PATH = "../lithography_simulation_Hopkins/data/output/stage1/results_comparison_gcd_45nm_origin_025_config.png"
+FITNESS_PLOT_PATH = "../lithography_simulation_Hopkins/data/output/stage1/fitness_evolution_gcd_45nm_origin_025_config.png"
 
 # 可视化参数1
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
