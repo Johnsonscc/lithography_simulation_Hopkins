@@ -6,6 +6,7 @@ from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from scipy.sparse.linalg import svds
 from tqdm import tqdm
 from scipy.sparse import lil_matrix, csr_matrix
+from scipy.ndimage import laplace  # 用于稳定的 NILS 梯度
 from config.parameters import *
 from utils.optimization_logger import OptimizationLogger
 
@@ -15,20 +16,19 @@ logger = logging.getLogger(__name__)
 class EdgeConstrainedInverseLithographyOptimizer:
     """
     边缘约束逆光刻优化器 (Edge-Constrained PE Base)
-    支持空间像锐化 (unsharp masking) 以验证锐度影响
+    包含了带“形状守卫”的拉普拉斯 NILS 联合优化方案
     """
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA, dx=DX, dy=DY,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
                  optimizer_type=OPTIMIZER_TYPE, edge_pixel_range=5,
                  canny_low_threshold=1, canny_high_threshold=300,
-                 lambda_nils=0.0, nils_cd=NILS_CD, nils_edge_dilation=3,
-                 apply_sharpening=True, sharpening_strength=2.0, sharpening_sigma=1):
+                 lambda_nils=0.5, nils_cd=NILS_CD, nils_edge_dilation=5,
+                 apply_sharpening=False, sharpening_strength=2.0, sharpening_sigma=1):
         """
         参数:
-            apply_sharpening: 是否应用空间像锐化
-            sharpening_strength: 锐化强度 (alpha)
-            sharpening_sigma: 高斯模糊的标准差
+            lambda_nils: NILS 梯度的最大缩放比例 (建议 0.1~0.2，0 表示不开启)
+            apply_sharpening: 是否应用空间像锐化 (建议设为 False，使用真实的 ILT NILS 优化)
         """
         self.lambda_ = lambda_
         self.na = na
@@ -52,20 +52,15 @@ class EdgeConstrainedInverseLithographyOptimizer:
         self.sharpening_sigma = sharpening_sigma
         self.optimizer_state = {}
 
-        # 边缘更新掩膜
         self.update_mask = None
-
-        # TCC Matrix storage for visualization
         self.tcc_matrix = None
-
         self.singular_values = None
         self.eigen_functions = None
         self._precompute_tcc_svd()
 
         logger.info(
-            f"EdgeConstrainedInverseLithographyOptimizer initialized with {optimizer_type}, edge_range={edge_pixel_range}, "
-            f"Canny thresholds=({canny_low_threshold}, {canny_high_threshold}), lambda_nils={lambda_nils}, "
-            f"nils_edge_dilation={nils_edge_dilation}, apply_sharpening={apply_sharpening}")
+            f"EdgeConstrainedInverseLithographyOptimizer initialized: opt={optimizer_type}, "
+            f"lambda_nils={lambda_nils}, apply_sharpening={apply_sharpening}")
 
     def pupil_response_function(self, fx, fy):
         r = np.sqrt(fx ** 2 + fy ** 2)
@@ -119,9 +114,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
         fy = np.linspace(-freq, freq, self.ly)
         TCC_4d = self._compute_full_tcc_matrix(fx, fy)
 
-        # Store the TCC matrix for visualization
         self.tcc_matrix = TCC_4d
-
         self.singular_values, self.eigen_functions = self._svd_of_tcc_matrix(TCC_4d, self.k_svd)
 
     def photoresist_model(self, intensity):
@@ -154,24 +147,6 @@ class EdgeConstrainedInverseLithographyOptimizer:
             square_avg = decay_rate * square_avg + (1 - decay_rate) * (gradient ** 2)
             self.optimizer_state['square_avg'] = square_avg
             new_mask = mask - learning_rate * gradient / (np.sqrt(square_avg) + epsilon)
-        elif self.optimizer_type == 'cg':
-            grad_curr = gradient
-            t = self.optimizer_state['t']
-            if t == 0:
-                direction = -grad_curr
-            else:
-                grad_prev = self.optimizer_state['prev_grad']
-                direction_prev = self.optimizer_state['direction']
-                y_k = grad_curr - grad_prev
-                numerator = np.sum(grad_curr * y_k)
-                denominator = np.sum(grad_prev ** 2)
-                beta = numerator / (denominator + 1e-10)
-                beta = max(0, beta)
-                direction = -grad_curr + beta * direction_prev
-            self.optimizer_state['prev_grad'] = grad_curr
-            self.optimizer_state['direction'] = direction
-            self.optimizer_state['t'] = t + 1
-            new_mask = mask + learning_rate * direction
         elif self.optimizer_type == 'adam':
             t = self.optimizer_state['t'] + 1
             m, v = self.optimizer_state['m'], self.optimizer_state['v']
@@ -181,14 +156,9 @@ class EdgeConstrainedInverseLithographyOptimizer:
             v_hat = v / (1 - 0.999 ** t)
             new_mask = mask - learning_rate * m_hat / (np.sqrt(v_hat) + 1e-4)
             self.optimizer_state.update({'m': m, 'v': v, 't': t})
-
         return np.clip(new_mask, 0, 1)
 
     def _detect_edge_region(self, target, edge_pixel_range=5):
-        """
-        检测目标图像的边缘区域，生成更新区域掩膜（用于优化更新）
-        使用 Canny 检测边缘，并对边缘进行膨胀（膨胀半径由 edge_pixel_range 控制）
-        """
         binary_target = (target > 0.5).astype(np.uint8)
         target_uint8 = (binary_target * 255).astype(np.uint8)
 
@@ -202,51 +172,43 @@ class EdgeConstrainedInverseLithographyOptimizer:
         else:
             update_mask = edge_binary
 
-        logger.info(
-            f"Edge region detection completed. Update region: {np.sum(update_mask > 0.1) / update_mask.size * 100:.1f}% of total area")
-        return update_mask
-
-    def _detect_edge_region_original(self, target, edge_pixel_range=5):
-        """
-        原先的边缘检测方法（Sobel + 形态学梯度 + 内部区域补充）
-        用于 NILS 计算，以保持指标一致性
-        """
-        binary_target = (target > 0.5).astype(np.uint8)
-
-        sobelx = cv2.Sobel(binary_target, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(binary_target, cv2.CV_64F, 0, 1, ksize=3)
-        edge_magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
-
-        kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(binary_target, kernel, iterations=1)
-        eroded = cv2.erode(binary_target, kernel, iterations=1)
-        morphological_edge = dilated - eroded
-
-        combined_edge = edge_magnitude + morphological_edge
-        edge_binary = (combined_edge > 0).astype(np.uint8)
-
-        if edge_pixel_range > 0:
-            kernel_size = 2 * edge_pixel_range + 1
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-            update_mask = cv2.dilate(edge_binary, kernel, iterations=1)
-        else:
-            update_mask = edge_binary
-
-        pattern_inner = cv2.erode(binary_target, kernel, iterations=edge_pixel_range // 2)
-        update_mask = np.logical_or(update_mask, pattern_inner).astype(np.float64)
-        update_mask = cv2.GaussianBlur(update_mask.astype(np.float32), (5, 5), 1.0)
-
         return update_mask
 
     def _apply_update_mask(self, gradient, update_mask):
-        smooth_mask = cv2.GaussianBlur(update_mask, (3, 3), 0.5)
-        masked_gradient = gradient * smooth_mask
-        return masked_gradient
+        smooth_mask = cv2.GaussianBlur(update_mask.astype(np.float32), (3, 3), 0.5)
+        return gradient * smooth_mask
 
-    def _compute_analytical_gradient(self, mask, target):
+    def _compute_nils_gradient_stable(self, target, intensity_raw, A_i_list):
         """
-        计算总损失及其梯度，支持空间像锐化
+        基于拉普拉斯算子的保形 NILS 梯度
+        改进：放宽边缘带至约3像素宽，增加有效区域，不再除以面积
         """
+        binary_target = (target > 0.5).astype(np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
+
+        # 放宽到 3 像素：用膨胀 1 次减去腐蚀 2 次的内侧
+        dilated = cv2.dilate(binary_target, kernel, iterations=1)
+        eroded = cv2.erode(binary_target, kernel, iterations=2)  # 腐蚀两次扩大着力带
+        edge_region = (dilated - eroded) > 0
+
+        area = np.sum(edge_region)
+        if area == 0:
+            return np.zeros_like(intensity_raw, dtype=np.complex128)
+
+        # 计算负拉普拉斯 (提供边缘锐化的驱动力)，不再除以面积
+        grad_nils_raw = -laplace(intensity_raw)
+        dL_dI = grad_nils_raw * edge_region.astype(np.float64)
+
+        # 反传至掩模
+        gradient_nils = np.zeros_like(intensity_raw, dtype=np.complex128)
+        for s_val, H_i, A_i in zip(self.singular_values, self.eigen_functions, A_i_list):
+            dL_dA_i = dL_dI * 2 * s_val * A_i.conj()
+            gradient_nils += ifft2(ifftshift(fftshift(fft2(dL_dA_i)) * np.conj(H_i)))
+
+        return np.real(gradient_nils)
+
+    def _compute_analytical_gradient(self, mask, target, current_iteration=0, max_iterations=100):
+        # 1. 前向仿真
         M_fft = fftshift(fft2(mask))
         A_i_list, intensity = [], np.zeros((self.lx, self.ly))
 
@@ -256,50 +218,19 @@ class EdgeConstrainedInverseLithographyOptimizer:
             intensity += s_val * (np.abs(A_i) ** 2)
 
         intensity_raw = intensity.copy()
-
         i_min, i_max = np.min(intensity), np.max(intensity)
         denom = i_max - i_min if (i_max - i_min) > 1e-10 else 1.0
         intensity_norm = (intensity - i_min) / denom
+        P = self.photoresist_model(intensity_norm)
 
-        # ------------------ 可选的锐化步骤 ------------------
-        if self.apply_sharpening:
-            # 生成高斯核
-            sigma = self.sharpening_sigma
-            ksize = int(2 * round(3 * sigma)) + 1
-            if ksize % 2 == 0:
-                ksize += 1
-            gauss1d = cv2.getGaussianKernel(ksize, sigma)
-            gauss_kernel = gauss1d @ gauss1d.T
-            # 锐化核: (1+alpha)*delta - alpha * gauss
-            identity = np.zeros((ksize, ksize))
-            identity[ksize//2, ksize//2] = 1
-            sharpen_kernel = (1 + self.sharpening_strength) * identity - self.sharpening_strength * gauss_kernel
-            # 应用锐化
-            sharpened = cv2.filter2D(intensity_norm, -1, sharpen_kernel, borderType=cv2.BORDER_REPLICATE)
-            sharpened = np.clip(sharpened, 0, 1)  # 保持范围
-            P_input = sharpened
-        else:
-            P_input = intensity_norm
-            sharpen_kernel = None
-        # -------------------------------------------------
-
-        P = self.photoresist_model(P_input)
-
+        # 2. 基础 PE/EPE 计算
         pe_loss = np.sum((target - P) ** 2)
-
         gy, gx = np.gradient(P)
         W = np.sqrt(gx ** 2 + gy ** 2 + 1e-10)
         epe_loss = np.sum(((P - target) ** 2) * (W / np.max(W) if np.max(W) > 0 else 1))
 
-        # PE 梯度计算
-        dP_dI_input = (self.a * P * (1 - P)) * (1.0 / denom)  # 对 P_input 的导数
-
-        # 通过锐化核反向传播到 intensity_norm
-        if self.apply_sharpening:
-            dP_dI = cv2.filter2D(dP_dI_input, -1, sharpen_kernel, borderType=cv2.BORDER_REPLICATE)
-        else:
-            dP_dI = dP_dI_input
-
+        # 3. 基础 PE 梯度
+        dP_dI = (self.a * P * (1 - P)) * (1.0 / denom)
         dF_dP = -2 * (target - P)
 
         gradient_pe = np.zeros_like(mask, dtype=np.complex128)
@@ -311,73 +242,51 @@ class EdgeConstrainedInverseLithographyOptimizer:
         total_gradient = gradient_pe
         total_loss = pe_loss
 
-        # NILS 正则化（可选）
-        if self.lambda_nils != 0:
-            nils_mean = self.compute_nils(intensity_raw, target, cd=self.nils_cd)
-            nils_loss = -self.lambda_nils * nils_mean
-            total_loss = pe_loss + nils_loss
+        # 初始化 NILS 梯度变量（用于返回）
+        grad_nils_adj = None
 
-            grad_nils = self._compute_nils_gradient(target, intensity_raw, A_i_list,
-                                                     self.singular_values, self.eigen_functions,
-                                                     cd=self.nils_cd)
-            total_gradient = gradient_pe + grad_nils
+        # ===== 4. 融合 NILS 梯度 (梯度手术 PCGrad + 严格能量匹配) =====
+        warmup_iters = int(max_iterations * 0.3)
 
-        return total_loss, pe_loss, epe_loss, total_gradient, intensity_norm, P, intensity_raw, A_i_list
+        if self.lambda_nils > 0 and current_iteration >= warmup_iters:
+            # 计算原始 NILS 锐化梯度
+            grad_nils = self._compute_nils_gradient_stable(target, intensity_raw, A_i_list)
 
-    def _compute_nils_gradient(self, target, intensity_raw, A_i_list, singular_values, eigen_functions, cd):
-        """
-        计算 -lambda_nils * NILS 对 mask 的梯度（完整变分导数，含散度项）
-        """
-        binary_target = (target > 0.5).astype(np.uint8)
-        kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(binary_target, kernel, iterations=1)
-        eroded = cv2.erode(binary_target, kernel, iterations=1)
-        strict_edge = (dilated - eroded) > 0
+            # 展平以便于计算向量点积
+            g_pe_flat = gradient_pe.ravel()
+            g_nils_flat = grad_nils.ravel()
 
-        if self.nils_edge_dilation > 0:
-            kernel_size = 2 * self.nils_edge_dilation + 1
-            kernel_dil = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-            edge_mask = cv2.dilate(strict_edge.astype(np.uint8), kernel_dil, iterations=1) > 0
-        else:
-            edge_mask = strict_edge
+            # 计算点积判断是否冲突
+            dot_product = np.dot(g_nils_flat, g_pe_flat)
 
-        area = np.sum(edge_mask)
-        if area == 0:
-            return np.zeros_like(intensity_raw)
+            # 梯度手术：如果点积小于0，剔除冲突分量
+            if dot_product < 0:
+                pe_norm_sq = np.dot(g_pe_flat, g_pe_flat) + 1e-12
+                grad_nils_proj = grad_nils - (dot_product / pe_norm_sq) * gradient_pe
+            else:
+                grad_nils_proj = grad_nils
 
-        # 对强度轻微平滑以减少噪声
-        I_smooth = cv2.GaussianBlur(intensity_raw, (3, 3), 0.5)
-        gy, gx = np.gradient(I_smooth, self.dy, self.dx)
-        grad_mag = np.sqrt(gx**2 + gy**2 + 1e-12)
-        safe_I = np.maximum(intensity_raw, 1e-12)
+            # 采用 L2 范数（整体能量）进行匹配，而不是最大值
+            norm_pe = np.linalg.norm(gradient_pe)
+            norm_nils = np.linalg.norm(grad_nils_proj)
 
-        # 单位方向场
-        threshold = 1e-6 * np.max(grad_mag)
-        ux = np.where(grad_mag > threshold, gx / grad_mag, 0.0)
-        uy = np.where(grad_mag > threshold, gy / grad_mag, 0.0)
+            if norm_nils > 1e-12 and norm_pe > 1e-12:
+                progress = (current_iteration - warmup_iters) / (max_iterations - warmup_iters)
 
-        # 散度项
-        comp_x = ux / safe_I
-        comp_y = uy / safe_I
-        dcomp_x_dx = np.gradient(comp_x, self.dx, axis=1)
-        dcomp_y_dy = np.gradient(comp_y, self.dy, axis=0)
-        divergence = dcomp_x_dx + dcomp_y_dy
+                # target_ratio 控制了 NILS 梯度的整体能量相对于 PE 的比例
+                target_ratio = progress * self.lambda_nils
 
-        # 灵敏度 dL/dI
-        dL_dI = self.lambda_nils * cd * (grad_mag / (safe_I**2) + divergence) * (edge_mask.astype(np.float64) / area)
+                # 强制缩放：保证 norm(grad_nils_adj) == target_ratio * norm(gradient_pe)
+                scale_factor = target_ratio * (norm_pe / norm_nils)
 
-        # 反向传播
-        gradient_nils = np.zeros_like(intensity_raw, dtype=np.complex128)
-        for s_val, H_i, A_i in zip(singular_values, eigen_functions, A_i_list):
-            dL_dA_i = dL_dI * 2 * s_val * A_i.conj()
-            gradient_nils += ifft2(ifftshift(fftshift(fft2(dL_dA_i)) * np.conj(H_i)))
-        gradient_nils = np.real(gradient_nils)
+                grad_nils_adj = grad_nils_proj * scale_factor
+                total_gradient = gradient_pe + grad_nils_adj
 
-        return gradient_nils
+        return total_loss, pe_loss, epe_loss, total_gradient, intensity_norm, P, intensity_raw, A_i_list, gradient_pe, grad_nils_adj
 
     def compute_nils(self, aerial, target, cd=NILS_CD):
         """
-        计算目标边缘区域的平均 NILS (使用原始空中像)
+        修正物理量纲的严格 NILS 评估函数
         """
         gy, gx = np.gradient(aerial, self.dy, self.dx)
         grad_mag = np.sqrt(gx ** 2 + gy ** 2)
@@ -388,9 +297,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
 
         binary_target = (target > 0.5).astype(np.uint8)
         kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(binary_target, kernel, iterations=1)
-        eroded = cv2.erode(binary_target, kernel, iterations=1)
-        strict_edge_mask = (dilated - eroded) > 0
+        strict_edge_mask = (cv2.dilate(binary_target, kernel, iterations=1) -
+                            cv2.erode(binary_target, kernel, iterations=1)) > 0
 
         if np.sum(strict_edge_mask) > 0:
             avg_nils = np.sum(nils_map * strict_edge_mask) / np.sum(strict_edge_mask)
@@ -408,7 +316,6 @@ class EdgeConstrainedInverseLithographyOptimizer:
         best_mask = initial_mask.copy()
         best_pe_loss = float('inf')
 
-        print("Detecting edge regions for constrained optimization...")
         self.update_mask = self._detect_edge_region(target, self.edge_pixel_range)
 
         if learning_rate is None:
@@ -417,34 +324,29 @@ class EdgeConstrainedInverseLithographyOptimizer:
         csv_logger = None
         if log_csv:
             csv_logger = OptimizationLogger(log_dir=log_dir)
-            total_loss, init_pe, _, _, _, _, _, _ = self._compute_analytical_gradient(mask, target)
+            # 现在 _compute_analytical_gradient 返回 10 个值
+            total_loss, init_pe, _, _, _, _, _, _, _, _ = self._compute_analytical_gradient(mask, target, 0, max_iterations)
             csv_logger.start_logging(
                 optimizer_type=f"EdgeConstrained-{self.optimizer_type}",
-                loss_type="PE (Edge-Constrained)",
+                loss_type="PE+NILS(Laplace Guard)",
                 learning_rate=learning_rate,
                 initial_loss=init_pe,
                 target_shape=f"{target.shape}",
-                config_params={**optimizer_params, "edge_pixel_range": self.edge_pixel_range}
+                config_params={**optimizer_params, "edge_pixel_range": self.edge_pixel_range,
+                               "lambda_nils": self.lambda_nils}
             )
 
         self._initialize_optimizer_state(mask.shape)
-        history = {
-            'pe_loss': [],
-            'epe_loss': [],
-            'nils': [],
-            'learning_rates': [],
-            'grad_norms': [],
-            'update_region_size': []
-        }
+        history = {'pe_loss': [], 'epe_loss': [], 'nils': [], 'grad_norms': [], 'update_region_size': []}
         start_time = time.time()
 
-        print(f"Starting Edge-Constrained Base PE Optimization ({max_iterations} iters)...")
-        print(f"Edge pixel range: {self.edge_pixel_range}px")
-        print(f"Update region: {np.sum(self.update_mask > 0.1) / self.update_mask.size * 100:.1f}% of total area")
+        print(f"Starting Edge-Constrained Joint Optimization ({max_iterations} iters)...")
+        print(f"Warm-up phase: 0 to {int(max_iterations * 0.3)} iters.")
 
         for iteration in range(max_iterations):
-            total_loss, pe_loss, epe_loss, gradient, aerial, printed, intensity_raw, A_i_list = \
-                self._compute_analytical_gradient(mask, target)
+            # 接收10个返回值
+            total_loss, pe_loss, epe_loss, gradient, aerial, printed, intensity_raw, A_i_list, grad_pe, grad_nils = \
+                self._compute_analytical_gradient(mask, target, iteration, max_iterations)
 
             nils = self.compute_nils(aerial, target, cd=self.nils_cd)
             history['nils'].append(nils)
@@ -452,10 +354,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
             masked_gradient = self._apply_update_mask(gradient, self.update_mask)
 
             active_pixels = np.sum(np.abs(masked_gradient) > 1e-6)
-            total_pixels = masked_gradient.size
-            update_ratio = active_pixels / total_pixels * 100
+            update_ratio = active_pixels / masked_gradient.size * 100
             history['update_region_size'].append(update_ratio)
-
             history['grad_norms'].append(np.linalg.norm(masked_gradient))
 
             if pe_loss < best_pe_loss:
@@ -466,29 +366,29 @@ class EdgeConstrainedInverseLithographyOptimizer:
             history['epe_loss'].append(epe_loss)
 
             if csv_logger:
-                csv_logger.log_iteration(
-                    iteration,
-                    pe_loss,
-                    masked_gradient,
-                    mask,
-                    self.optimizer_state,
-                    time.time() - start_time,
-                    nils=nils
-                )
+                csv_logger.log_iteration(iteration, pe_loss, masked_gradient, mask,
+                                         self.optimizer_state, time.time() - start_time, nils=nils)
 
             mask = self._update_with_optimizer(mask, masked_gradient, learning_rate, **optimizer_params)
 
-            if iteration % 20 == 0:
-                print(f"Iter {iteration}: PE Loss={pe_loss:.4f}, Best PE={best_pe_loss:.4f}, "
-                      f"NILS={nils:.4f}, Update Region={update_ratio:.1f}%, Grad Norm={np.linalg.norm(masked_gradient):.4f}")
+            # 每 10 次迭代打印详细的梯度信息
+            if iteration % 10 == 0:
+                grad_pe_norm = np.linalg.norm(grad_pe)
+                print(f"Iter {iteration:3d}: PE Loss={pe_loss:.2f}, EPE={epe_loss:.2f}, NILS={nils:.4f}, "
+                      f"GradNorm(total)={np.linalg.norm(masked_gradient):.2f}")
+                if grad_nils is not None:
+                    grad_nils_norm = np.linalg.norm(grad_nils)
+                    grad_nils_max = np.max(np.abs(grad_nils))
+                    grad_nils_mean = np.mean(np.abs(grad_nils))
+                    print(f"         grad_pe norm={grad_pe_norm:.2e}, grad_nils norm={grad_nils_norm:.2e}, "
+                          f"grad_nils max={grad_nils_max:.2e}, mean={grad_nils_mean:.2e}")
+                else:
+                    print(f"         grad_pe norm={grad_pe_norm:.2e} (NILS not yet active)")
 
         if csv_logger:
             csv_logger.close()
 
-        avg_update_ratio = np.mean(history['update_region_size'])
         print(f"Optimization finished. Min PE Loss: {best_pe_loss:.4f}")
-        print(f"Average update region: {avg_update_ratio:.1f}% of total pixels")
-
         return best_mask, history, self.update_mask
 
 
@@ -499,15 +399,15 @@ def inverse_lithography_optimization_edge_constrained_base(initial_mask, target_
                                                            edge_pixel_range=10,
                                                            canny_low_threshold=50,
                                                            canny_high_threshold=150,
-                                                           lambda_nils=0.0,
+                                                           lambda_nils=0.5,  # 推荐设为 0.5 或更高以发挥效果
                                                            nils_cd=NILS_CD,
-                                                           nils_edge_dilation=3,
-                                                           apply_sharpening=False,
+                                                           nils_edge_dilation=5,
+                                                           apply_sharpening=False,  # 务必设为 False
                                                            sharpening_strength=1.0,
                                                            sharpening_sigma=1.0,
                                                            **optimizer_params):
     """
-    边缘约束的单PE优化入口函数，支持空间像锐化
+    边缘约束逆向光刻优化（融合 NILS 拉普拉斯守卫）
     """
     optimizer = EdgeConstrainedInverseLithographyOptimizer(
         optimizer_type=optimizer_type,

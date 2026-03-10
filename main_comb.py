@@ -38,7 +38,7 @@ def main():
 
     # 4. 进行初始状态评估
     print("Running initial evaluation...")
-    _, pe_init, epe_init, _, aerial_init, resist_init, _, _ = optimizer._compute_analytical_gradient(
+    _, pe_init, epe_init, _, aerial_init, resist_init, _, _ ,_ ,_= optimizer._compute_analytical_gradient(
         initial_mask, target_image
     )
 
@@ -56,7 +56,7 @@ def main():
 
     # 6. 最终结果评估
     print("\nRunning final evaluation...")
-    _, pe_final, epe_final, _, aerial_best, resist_best, _, _ = optimizer._compute_analytical_gradient(
+    _, pe_final, epe_final, _, aerial_best, resist_best, _, _, _ ,_ = optimizer._compute_analytical_gradient(
         final_mask, target_image
     )
 

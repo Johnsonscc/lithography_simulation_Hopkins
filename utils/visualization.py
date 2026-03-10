@@ -89,32 +89,70 @@ def plot_tcc_structure(tcc_matrix, save_path=None):
     plt.show()
 
 
-# ... (Include previous plotting functions: plot_comparison, plot_dual_axis_loss_history, plot_edge_constraint_visualization) ...
 def plot_comparison(target_image, aerial_image_initial, print_image_initial,
                     best_mask, best_simulated_image, optimized_binary_simulated_image,
                     pe_initial, pe_best, mepe_initial, mepe_best, save_path=None):
-    # [Keep original implementation]
+    # 创建自定义颜色映射
     intensity_cmap = create_black_red_yellow_cmap()
+
     plt.figure(figsize=(18, 12))
-    plt.subplot(231);
-    plt.imshow(target_image, cmap='gray');
+
+    # 目标图像
+    plt.subplot(231)
+    plt.imshow(target_image, cmap='gray')
     plt.title('Target Image')
-    plt.subplot(232);
-    plt.imshow(aerial_image_initial, cmap=intensity_cmap);
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+
+    # 原始掩膜曝光后的图像
+    plt.subplot(232)
+    plt.imshow(aerial_image_initial, cmap=intensity_cmap)
     plt.title('Aerial Image (Original)')
-    plt.subplot(233);
-    plt.imshow(print_image_initial, cmap='gray');
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+
+    # 原始掩膜曝光后的二值图像
+    plt.subplot(233)
+    plt.imshow(print_image_initial, cmap='gray')
     plt.title('Printed Image (Original)')
-    plt.subplot(234);
-    plt.imshow(best_mask, cmap='gray');
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+    plt.text(0.75, -0.12, f'PE = {pe_initial:.2f}', transform=plt.gca().transAxes,
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+    plt.text(0, -0.12, f'EPE = {mepe_initial:.2f}', transform=plt.gca().transAxes,
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+
+    # 优化后的掩膜
+    plt.subplot(234)
+    plt.imshow(best_mask, cmap='gray')
     plt.title('Optimized Mask')
-    plt.subplot(235);
-    plt.imshow(best_simulated_image, cmap=intensity_cmap);
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+
+    # 优化掩膜曝光后的图像
+    plt.subplot(235)
+    plt.imshow(best_simulated_image, cmap=intensity_cmap)
     plt.title('Aerial Image (Optimized)')
-    plt.subplot(236);
-    plt.imshow(optimized_binary_simulated_image, cmap='gray');
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+
+    # 优化掩膜曝光后的二值图像
+    plt.subplot(236)
+    plt.imshow(optimized_binary_simulated_image, cmap='gray')
     plt.title('Printed Image (Optimized)')
-    if save_path: plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+
+    plt.text(0.75, -0.12, f'PE = {pe_best:.2f}', transform=plt.gca().transAxes,
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+    plt.text(0, -0.12, f'EPE = {mepe_best:.2f}', transform=plt.gca().transAxes,
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
     plt.show()
 
 
