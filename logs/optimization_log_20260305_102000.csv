@@ -1,0 +1,15 @@
+# ===========================================
+# Inverse Lithography Optimization Log
+# ===========================================
+# Timestamp: 2026-03-05 10:20:01
+# Optimizer Type: EdgeConstrained- momentum
+# Loss Type: PE (Edge-Constrained)
+# Learning Rate: 0.1
+# Initial Loss: 7145.615968
+"# Target Shape: (1000, 1000)"
+# Optimizer Parameters:
+#   edge_pixel_range: 5
+# ===========================================
+
+iteration,loss,grad_norm,nils,mask_min,mask_max,mask_mean,mask_std,time_elapsed
+0,7145.615968222493,488.3611542030569,1.1982754089779901,0.0,1.0,0.2407,0.42750849114374323,0.276134729385376

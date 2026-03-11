@@ -181,7 +181,6 @@ class EdgeConstrainedInverseLithographyOptimizer:
     def _compute_nils_gradient_stable(self, target, intensity_raw, A_i_list):
         """
         基于拉普拉斯算子的保形 NILS 梯度
-        改进：放宽边缘带至约3像素宽，增加有效区域，不再除以面积
         """
         binary_target = (target > 0.5).astype(np.uint8)
         kernel = np.ones((3, 3), np.uint8)
@@ -245,7 +244,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
         # 初始化 NILS 梯度变量（用于返回）
         grad_nils_adj = None
 
-        # ===== 4. 融合 NILS 梯度 (梯度手术 PCGrad + 严格能量匹配) =====
+        # 4. 融合 NILS 梯度 (梯度手术 PCGrad + 严格能量匹配)
         warmup_iters = int(max_iterations * 0.3)
 
         if self.lambda_nils > 0 and current_iteration >= warmup_iters:
@@ -324,7 +323,6 @@ class EdgeConstrainedInverseLithographyOptimizer:
         csv_logger = None
         if log_csv:
             csv_logger = OptimizationLogger(log_dir=log_dir)
-            # 现在 _compute_analytical_gradient 返回 10 个值
             total_loss, init_pe, _, _, _, _, _, _, _, _ = self._compute_analytical_gradient(mask, target, 0, max_iterations)
             csv_logger.start_logging(
                 optimizer_type=f"EdgeConstrained-{self.optimizer_type}",
@@ -344,7 +342,6 @@ class EdgeConstrainedInverseLithographyOptimizer:
         print(f"Warm-up phase: 0 to {int(max_iterations * 0.3)} iters.")
 
         for iteration in range(max_iterations):
-            # 接收10个返回值
             total_loss, pe_loss, epe_loss, gradient, aerial, printed, intensity_raw, A_i_list, grad_pe, grad_nils = \
                 self._compute_analytical_gradient(mask, target, iteration, max_iterations)
 

@@ -177,18 +177,62 @@ def plot_dual_axis_loss_history(history, save_path=None):
     plt.show()
 
 
-def plot_edge_constraint_visualization(target_image, initial_mask, final_mask, update_mask, edge_pixel_range,
-                                       save_path=None):
-    # [Keep original implementation]
+def plot_edge_constraint_visualization(target_image, initial_mask, final_mask,
+                                       update_mask, edge_pixel_range, save_path=None):
+    """
+    绘制边缘约束优化的可视化图
+    """
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    axes[0, 0].imshow(target_image, cmap='gray');
-    axes[0, 1].imshow(update_mask, cmap='hot');
-    axes[0, 2].imshow(initial_mask, cmap='gray')
-    axes[1, 0].imshow(final_mask, cmap='gray');
-    axes[1, 1].imshow((final_mask - initial_mask) * update_mask, cmap='coolwarm');
-    axes[1, 2].imshow(np.abs(final_mask - initial_mask) * (target_image < 0.1), cmap='Reds')
-    if save_path: plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
+
+    # 1. 目标图像
+    axes[0, 0].imshow(target_image, cmap='gray', vmin=0, vmax=1)
+    axes[0, 0].set_title('Target Image')
+    axes[0, 0].axis('off')
+
+    # 2. 更新掩膜
+    axes[0, 1].imshow(update_mask, cmap='hot', vmin=0, vmax=1)
+    axes[0, 1].set_title(f'Update Region Mask\n(Edge Range: {edge_pixel_range}px)')
+    axes[0, 1].axis('off')
+
+    # 3. 初始掩膜
+    axes[0, 2].imshow(initial_mask, cmap='gray', vmin=0, vmax=1)
+    axes[0, 2].set_title('Initial Mask')
+    axes[0, 2].axis('off')
+
+    # 4. 最终掩膜
+    axes[1, 0].imshow(final_mask, cmap='gray', vmin=0, vmax=1)
+    axes[1, 0].set_title('Optimized Mask')
+    axes[1, 0].axis('off')
+
+    # 5. 掩膜差异（只显示更新区域）
+    mask_diff = final_mask - initial_mask
+    masked_diff = mask_diff * update_mask
+    diff_abs = np.abs(masked_diff)
+
+    im = axes[1, 1].imshow(masked_diff, cmap='coolwarm', vmin=-0.5, vmax=0.5)
+    axes[1, 1].set_title('Mask Change (Update Region Only)')
+    axes[1, 1].axis('off')
+    plt.colorbar(im, ax=axes[1, 1], fraction=0.046, pad=0.04)
+
+    # 6. 背景区域变化（应该很小）
+    background_mask = (target_image < 0.1).astype(np.float64)
+    background_change = np.abs(final_mask - initial_mask) * background_mask
+
+    im2 = axes[1, 2].imshow(background_change, cmap='Reds', vmin=0, vmax=0.1)
+    axes[1, 2].set_title('Background Region Changes')
+    axes[1, 2].axis('off')
+    plt.colorbar(im2, ax=axes[1, 2], fraction=0.046, pad=0.04)
+
+    plt.suptitle(f'Edge-Constrained Inverse Lithography Optimization\n(Edge Range: {edge_pixel_range} pixels)',
+                 fontsize=14)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
 
 def plot_loss_and_nils(history, save_path=None):
     """
