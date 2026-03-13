@@ -1,4 +1,3 @@
-# 文件：utils/optimization_logger.py
 import csv
 import os
 import numpy as np
@@ -6,7 +5,7 @@ from datetime import datetime
 
 
 class OptimizationLogger:
-    """优化过程CSV日志记录器"""
+    """优化过程CSV日志记录器（支持PE、EPE、NILS分别记录）"""
 
     def __init__(self, log_dir="../lithography_simulation_Hopkins/data/logs", filename=None):
         """
@@ -54,9 +53,9 @@ class OptimizationLogger:
         self.writer.writerow(["# ==========================================="])
         self.writer.writerow([])  # 空行分隔
 
-        # CSV表头（添加了 nils 字段）
-        headers = ["iteration", "loss", "grad_norm", "nils",
-                   "mask_min", "mask_max", "mask_mean", "mask_std"]
+        # CSV表头：添加 pe_loss, epe_loss, nils 分别记录
+        headers = ["iteration", "pe_loss", "epe_loss", "nils", "total_loss",
+                   "grad_norm", "mask_min", "mask_max", "mask_mean", "mask_std"]
 
         # 根据优化器类型添加特定字段
         if optimizer_type == 'momentum':
@@ -77,9 +76,22 @@ class OptimizationLogger:
         print(f"CSV日志已创建: {self.filepath}")
         return self.filepath
 
-    def log_iteration(self, iteration, loss, gradient, mask,
-                      optimizer_state=None, time_elapsed=0, nils=None):
-        """记录单次迭代数据"""
+    def log_iteration(self, iteration, pe_loss, epe_loss, nils, total_loss,
+                      gradient, mask, optimizer_state=None, time_elapsed=0):
+        """
+        记录单次迭代数据
+
+        参数:
+            iteration: 迭代次数
+            pe_loss: 像素误差损失
+            epe_loss: 边缘放置误差损失
+            nils: 平均NILS值
+            total_loss: 总损失（可能包含正则项）
+            gradient: 当前梯度
+            mask: 当前掩模
+            optimizer_state: 优化器状态字典（可选）
+            time_elapsed: 已用时间
+        """
         # 计算基础指标
         grad_norm = float(np.linalg.norm(gradient))
         mask_min = float(np.min(mask))
@@ -87,9 +99,13 @@ class OptimizationLogger:
         mask_mean = float(np.mean(mask))
         mask_std = float(np.std(mask))
 
-        # 构建数据行（包含 nils）
-        row_data = [iteration, float(loss), grad_norm,
+        # 构建数据行
+        row_data = [iteration,
+                    float(pe_loss) if pe_loss is not None else '',
+                    float(epe_loss) if epe_loss is not None else '',
                     float(nils) if nils is not None else '',
+                    float(total_loss) if total_loss is not None else '',
+                    grad_norm,
                     mask_min, mask_max, mask_mean, mask_std]
 
         # 添加优化器特定指标

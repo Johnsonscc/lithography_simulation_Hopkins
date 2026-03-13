@@ -6,7 +6,7 @@ from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from scipy.sparse.linalg import svds
 from tqdm import tqdm
 from scipy.sparse import lil_matrix, csr_matrix
-from scipy.ndimage import laplace  # 用于稳定的 NILS 梯度
+from scipy.ndimage import laplace
 from config.parameters import *
 from utils.optimization_logger import OptimizationLogger
 
@@ -16,19 +16,17 @@ logger = logging.getLogger(__name__)
 class EdgeConstrainedInverseLithographyOptimizer:
     """
     边缘约束逆光刻优化器 (Edge-Constrained PE Base)
-    包含了带“形状守卫”的拉普拉斯 NILS 联合优化方案
+    包含拉普拉斯 NILS 联合优化方案（无预热切换，始终联合优化）
     """
 
     def __init__(self, lambda_=LAMBDA, na=NA, sigma=SIGMA, dx=DX, dy=DY,
                  lx=LX, ly=LY, k_svd=ILT_K_SVD, a=A, tr=TR,
                  optimizer_type=OPTIMIZER_TYPE, edge_pixel_range=5,
-                 canny_low_threshold=1, canny_high_threshold=300,
-                 lambda_nils=0.5, nils_cd=NILS_CD, nils_edge_dilation=5,
-                 apply_sharpening=False, sharpening_strength=2.0, sharpening_sigma=1):
+                 canny_low_threshold=50, canny_high_threshold=200,
+                 lambda_nils=0.7, nils_cd=NILS_CD):  # lambda_nils 控制 NILS 权重，0 表示不开启
         """
         参数:
-            lambda_nils: NILS 梯度的最大缩放比例 (建议 0.1~0.2，0 表示不开启)
-            apply_sharpening: 是否应用空间像锐化 (建议设为 False，使用真实的 ILT NILS 优化)
+            lambda_nils: NILS 梯度的整体能量比例（建议 0.5~1.0），0 表示禁用 NILS 优化
         """
         self.lambda_ = lambda_
         self.na = na
@@ -46,10 +44,6 @@ class EdgeConstrainedInverseLithographyOptimizer:
         self.canny_high_threshold = canny_high_threshold
         self.lambda_nils = lambda_nils
         self.nils_cd = nils_cd
-        self.nils_edge_dilation = nils_edge_dilation
-        self.apply_sharpening = apply_sharpening
-        self.sharpening_strength = sharpening_strength
-        self.sharpening_sigma = sharpening_sigma
         self.optimizer_state = {}
 
         self.update_mask = None
@@ -59,8 +53,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
         self._precompute_tcc_svd()
 
         logger.info(
-            f"EdgeConstrainedInverseLithographyOptimizer initialized: opt={optimizer_type}, "
-            f"lambda_nils={lambda_nils}, apply_sharpening={apply_sharpening}")
+            f"EdgeConstrainedInverseLithographyOptimizer initialized: opt={optimizer_type}"
+        )
 
     def pupil_response_function(self, fx, fy):
         r = np.sqrt(fx ** 2 + fy ** 2)
@@ -184,7 +178,6 @@ class EdgeConstrainedInverseLithographyOptimizer:
         """
         binary_target = (target > 0.5).astype(np.uint8)
         kernel = np.ones((3, 3), np.uint8)
-
         # 放宽到 3 像素：用膨胀 1 次减去腐蚀 2 次的内侧
         dilated = cv2.dilate(binary_target, kernel, iterations=1)
         eroded = cv2.erode(binary_target, kernel, iterations=2)  # 腐蚀两次扩大着力带
@@ -244,10 +237,8 @@ class EdgeConstrainedInverseLithographyOptimizer:
         # 初始化 NILS 梯度变量（用于返回）
         grad_nils_adj = None
 
-        # 4. 融合 NILS 梯度 (梯度手术 PCGrad + 严格能量匹配)
-        warmup_iters = int(max_iterations * 0.3)
-
-        if self.lambda_nils > 0 and current_iteration >= warmup_iters:
+        # 4. 融合 NILS 梯度 (梯度手术 PCGrad + 严格能量匹配)，无预热阶段
+        if self.lambda_nils > 0:
             # 计算原始 NILS 锐化梯度
             grad_nils = self._compute_nils_gradient_stable(target, intensity_raw, A_i_list)
 
@@ -270,9 +261,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
             norm_nils = np.linalg.norm(grad_nils_proj)
 
             if norm_nils > 1e-12 and norm_pe > 1e-12:
-                progress = (current_iteration - warmup_iters) / (max_iterations - warmup_iters)
-
-                # target_ratio 控制了 NILS 梯度的整体能量相对于 PE 的比例
+                progress = current_iteration / max_iterations  # 全局进度
                 target_ratio = progress * self.lambda_nils
 
                 # 强制缩放：保证 norm(grad_nils_adj) == target_ratio * norm(gradient_pe)
@@ -309,7 +298,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
     def optimize(self, initial_mask, target, learning_rate=None,
                  max_iterations=ILT_MAX_ITERATIONS,
                  log_csv=True, log_dir="logs", experiment_tag="",
-                 **optimizer_params):
+                 ILT_OPTIMIZER_CONFIGS=None, **optimizer_params):
 
         mask = initial_mask.copy()
         best_mask = initial_mask.copy()
@@ -339,7 +328,7 @@ class EdgeConstrainedInverseLithographyOptimizer:
         start_time = time.time()
 
         print(f"Starting Edge-Constrained Joint Optimization ({max_iterations} iters)...")
-        print(f"Warm-up phase: 0 to {int(max_iterations * 0.3)} iters.")
+        print(f"NILS optimization active from start (lambda_nils={self.lambda_nils}).")
 
         for iteration in range(max_iterations):
             total_loss, pe_loss, epe_loss, gradient, aerial, printed, intensity_raw, A_i_list, grad_pe, grad_nils = \
@@ -363,8 +352,18 @@ class EdgeConstrainedInverseLithographyOptimizer:
             history['epe_loss'].append(epe_loss)
 
             if csv_logger:
-                csv_logger.log_iteration(iteration, pe_loss, masked_gradient, mask,
-                                         self.optimizer_state, time.time() - start_time, nils=nils)
+                # 修正后的调用：按新签名传递参数
+                csv_logger.log_iteration(
+                    iteration,
+                    pe_loss,
+                    epe_loss,
+                    nils,
+                    total_loss,
+                    masked_gradient,
+                    mask,
+                    self.optimizer_state,
+                    time.time() - start_time
+                )
 
             mask = self._update_with_optimizer(mask, masked_gradient, learning_rate, **optimizer_params)
 
@@ -393,18 +392,14 @@ def inverse_lithography_optimization_edge_constrained_base(initial_mask, target_
                                                            learning_rate=None,
                                                            max_iterations=ILT_MAX_ITERATIONS,
                                                            optimizer_type=OPTIMIZER_TYPE,
-                                                           edge_pixel_range=10,
+                                                           edge_pixel_range=5,
                                                            canny_low_threshold=50,
                                                            canny_high_threshold=150,
-                                                           lambda_nils=0.5,  # 推荐设为 0.5 或更高以发挥效果
+                                                           lambda_nils=0.5,  # 推荐设为 0.5 或更高
                                                            nils_cd=NILS_CD,
-                                                           nils_edge_dilation=5,
-                                                           apply_sharpening=False,  # 务必设为 False
-                                                           sharpening_strength=1.0,
-                                                           sharpening_sigma=1.0,
                                                            **optimizer_params):
     """
-    边缘约束逆向光刻优化（融合 NILS 拉普拉斯守卫）
+    边缘约束逆向光刻优化（融合 NILS 拉普拉斯守卫，无预热阶段）
     """
     optimizer = EdgeConstrainedInverseLithographyOptimizer(
         optimizer_type=optimizer_type,
@@ -413,10 +408,6 @@ def inverse_lithography_optimization_edge_constrained_base(initial_mask, target_
         canny_high_threshold=canny_high_threshold,
         lambda_nils=lambda_nils,
         nils_cd=nils_cd,
-        nils_edge_dilation=nils_edge_dilation,
-        apply_sharpening=apply_sharpening,
-        sharpening_strength=sharpening_strength,
-        sharpening_sigma=sharpening_sigma
     )
 
     optimized_mask, history, update_mask = optimizer.optimize(
